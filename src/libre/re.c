@@ -151,7 +151,6 @@ re_group_print(enum re_dialect dialect, int (*getc)(void *opaque), void *opaque,
 {
 	const struct dialect *m;
 	struct re_grp g;
-	int r;
 
 	assert(getc != NULL);
 	assert(escputc != NULL);
@@ -176,16 +175,9 @@ re_group_print(enum re_dialect dialect, int (*getc)(void *opaque), void *opaque,
 		return -1;
 	}
 
-	if (flags & RE_ICASE) {
-		/* TODO: bm_desensitise */
-	}
-
-	r = bm_print(f, &g.set, boxed, escputc);
-	if (r == -1) {
-		goto error;
-	}
-
-	return r;
+	/* TODO: to return when groups are converted to DFA */
+	errno = ENOSYS;
+	goto error;
 
 error:
 
@@ -206,7 +198,6 @@ re_group_snprint(enum re_dialect dialect, int (*getc)(void *opaque), void *opaqu
 {
 	const struct dialect *m;
 	struct re_grp g;
-	int r;
 
 	assert(getc != NULL);
 	assert(escputc != NULL);
@@ -236,16 +227,9 @@ re_group_snprint(enum re_dialect dialect, int (*getc)(void *opaque), void *opaqu
 		return -1;
 	}
 
-	if (flags & RE_ICASE) {
-		/* TODO: bm_desensitise */
-	}
-
-	r = bm_snprint(&g.set, s, n, boxed, escputc);
-	if (r == -1) {
-		goto error;
-	}
-
-	return r;
+	/* TODO: to return when groups are converted to DFA */
+	errno = ENOSYS;
+	goto error;
 
 error:
 
