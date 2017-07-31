@@ -5,6 +5,7 @@ SRC += src/adt/dlist.c
 SRC += src/adt/priq.c
 SRC += src/adt/path.c
 SRC += src/adt/set.c
+SRC += src/adt/hmap.c
 SRC += src/adt/xalloc.c
 
 PART += adt
