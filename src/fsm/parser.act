@@ -35,6 +35,7 @@
 	#include <fsm/fsm.h>
 
 	#include <adt/xalloc.h>
+	#include <adt/hmap.h>
 
 	#include "libfsm/internal.h"	/* XXX */
 
@@ -44,9 +45,13 @@
 	typedef char *             string;
 	typedef struct fsm_state * state;
 
+        /* default number of buckets for the idmap */
+        enum { NBUCKETS = 1024 };
+	static int debug_hmap = 0;
 	struct act_state {
 		int lex_tok;
 		int lex_tok_save;
+                struct hmap *idmap;
 		struct act_statelist *sl;
 	};
 
@@ -197,6 +202,7 @@
 
 		assert(@n != NULL);
 
+                /*
 		for (p = act_state->sl; p != NULL; p = p->next) {
 			assert(p->id != NULL);
 			assert(p->state != NULL);
@@ -205,6 +211,23 @@
 				@s = p->state;
 				break;
 			}
+		}
+                */
+                p = hmap_getptr(act_state->idmap, @n);
+
+                if (debug_hmap) {
+			struct act_statelist *p0 = p;
+
+			for (p = act_state->sl; p != NULL; p = p->next) {
+				assert(p->id != NULL);
+				assert(p->state != NULL);
+
+				if (0 == strcmp(p->id, @n)) {
+					@s = p->state;
+					break;
+				}
+			}
+			assert(p == p0);
 		}
 
 		if (p == NULL) {
@@ -232,7 +255,10 @@
 
 			new->next = act_state->sl;
 			act_state->sl = new;
-		}
+                        hmap_setptr(act_state->idmap, new->id, new);
+		} else {
+                        @s = p->state;
+                }
 	@};
 
 	<mark-start>: (s :state) -> () = @{
@@ -344,6 +370,7 @@
 		lx->free  = lx_dynfree;
 
 		act_state_s.sl = NULL;
+                act_state_s.idmap = hmap_create_string(NBUCKETS, 0.6f);
 
 		/* This is a workaround for ADVANCE_LEXER assuming a pointer */
 		act_state = &act_state_s;
@@ -358,6 +385,7 @@
 		ADVANCE_LEXER; /* XXX: what if the first token is unrecognised? */
 		p_fsm(new, lex_state, act_state);
 
+                hmap_free(act_state_s.idmap);
 		lx->free(lx);
 
 		return new;
