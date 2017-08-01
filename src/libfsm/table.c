@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <adt/hmap.h>
 #include <adt/set.h>
 
 #include <fsm/fsm.h>
@@ -13,6 +14,8 @@
 #include <fsm/walk.h>
 
 #include "./internal.h"
+
+enum { NBUCKETS = 1024 };
 
 static int
 count_state_things(const struct fsm *fsm, const struct fsm_state *st, void *opaque)
@@ -42,16 +45,23 @@ count_edge_things(const struct fsm *fsm,
 }
 
 static size_t
-indexof(const struct fsm *fsm, const struct fsm_state *state)
+indexof(const struct fsm *fsm, const struct fsm_state *state, struct hmap *cache)
 {
 	struct fsm_state *s;
 	size_t i;
+	union hmap_value *v;
 
 	assert(fsm != NULL);
 	assert(state != NULL);
 
+	v = hmap_get(cache, (void *)state);
+	if (v != NULL) {
+		return v->u;
+	}
+
 	for (s = fsm->sl, i = 0; s != NULL; s = s->next, i++) {
 		if (s == state) {
+			hmap_setuint(cache, (void *)state, i);
 			return i;
 		}
 	}
@@ -63,6 +73,7 @@ indexof(const struct fsm *fsm, const struct fsm_state *state)
 struct builder {
 	struct fsm_table *tbl;
 	const struct fsm_state *src;
+	struct hmap *cache;
 	size_t si;
 	size_t end;
 	size_t edge;
@@ -82,7 +93,7 @@ build_state_info(const struct fsm *fsm, const struct fsm_state *st, void *opaque
 		return 1;
 	}
 
-	si = indexof(fsm,st);
+	si = indexof(fsm,st, b->cache);
 
 	if (is_start) {
 		assert(b->tbl->start == (size_t)-1);
@@ -110,7 +121,7 @@ build_edge_info(const struct fsm *fsm, const struct fsm_state *src, unsigned int
 
 	if (src != b->src) {
 		b->src = src;
-		b->si = indexof(fsm, src);
+		b->si = indexof(fsm, src, b->cache);
 	}
 	si = b->si;
 
@@ -119,7 +130,7 @@ build_edge_info(const struct fsm *fsm, const struct fsm_state *src, unsigned int
 
 	b->tbl->edges[ind].src = si;
 	b->tbl->edges[ind].lbl = lbl;
-	b->tbl->edges[ind].dst = indexof(fsm, dst);
+	b->tbl->edges[ind].dst = indexof(fsm, dst, b->cache);
 
 	return 1;
 }
@@ -164,8 +175,10 @@ fsm_table(const struct fsm *fsm)
 	b.edge = 0;
 	b.src = NULL;
 	b.si = 0;
+	b.cache = hmap_create_pointer(NBUCKETS, 0.65f);
 	fsm_walk_states(fsm, &b, build_state_info);
 	fsm_walk_edges(fsm, &b, build_edge_info);
+	hmap_free(b.cache);
 
 	return tbl;
 

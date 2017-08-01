@@ -10,6 +10,7 @@
 #include <stdio.h>
 
 #include <adt/set.h>
+#include <adt/hmap.h>
 #include <adt/bitmap.h>
 
 #include <fsm/fsm.h>
@@ -22,16 +23,23 @@
 #include "libfsm/out.h"
 
 static unsigned int
-indexof(const struct fsm *fsm, const struct fsm_state *state)
+indexof(const struct fsm *fsm, const struct fsm_state *state, struct hmap *cache)
 {
 	struct fsm_state *s;
 	unsigned int i;
+	union hmap_value *v;
 
 	assert(fsm != NULL);
 	assert(state != NULL);
 
+	v = hmap_get(cache, (void *)state);
+	if (v != NULL) {
+		return v->u;
+	}
+
 	for (s = fsm->sl, i = 0; s != NULL; s = s->next, i++) {
 		if (s == state) {
+			hmap_setuint(cache, (void *)state, i);
 			return i;
 		}
 	}
@@ -155,7 +163,7 @@ findany(const struct fsm_state *state)
 }
 
 void
-fsm_out_fsm(const struct fsm *fsm, FILE *f)
+fsm_out_fsm_inner(const struct fsm *fsm, FILE *f, struct hmap *cache)
 {
 	struct fsm_state *s, *start;
 	int end;
@@ -172,7 +180,9 @@ fsm_out_fsm(const struct fsm *fsm, FILE *f)
 
 			a = findany(s);
 			if (a != NULL) {
-				fprintf(f, "%-2u -> %2u ?;\n", indexof(fsm, s), indexof(fsm, a));
+				fprintf(f, "%-2u -> %2u ?;\n",
+					indexof(fsm, s, cache),
+					indexof(fsm, a, cache));
 				continue;
 			}
 		}
@@ -184,7 +194,9 @@ fsm_out_fsm(const struct fsm *fsm, FILE *f)
 			for (st = set_first(e->sl, &jt); st != NULL; st = set_next(&jt)) {
 				assert(st != NULL);
 
-				fprintf(f, "%-2u -> %2u", indexof(fsm, s), indexof(fsm, st));
+				fprintf(f, "%-2u -> %2u",
+					indexof(fsm, s, cache),
+					indexof(fsm, st, cache));
 
 				/* TODO: print " ?" if all edges are equal */
 
@@ -233,7 +245,8 @@ fsm_out_fsm(const struct fsm *fsm, FILE *f)
 		return;
 	}
 
-	fprintf(f, "start: %u;\n", indexof(fsm, start));
+	fprintf(f, "start: %u;\n",
+		indexof(fsm, start, cache));
 
 	end = 0;
 	for (s = fsm->sl; s != NULL; s = s->next) {
@@ -249,8 +262,20 @@ fsm_out_fsm(const struct fsm *fsm, FILE *f)
 		if (fsm_isend(fsm, s)) {
 			end--;
 
-			fprintf(f, "%u%s", indexof(fsm, s), end > 0 ? ", " : ";\n");
+			fprintf(f, "%u%s", indexof(fsm, s, cache),
+				end > 0 ? ", " : ";\n");
 		}
 	}
+}
+
+enum { NBUCKETS = 1024 };
+
+void
+fsm_out_fsm(const struct fsm *fsm, FILE *f)
+{
+	struct hmap *cache;
+	cache = hmap_create_pointer(NBUCKETS, 0.6f);
+	fsm_out_fsm_inner(fsm, f, cache);
+	hmap_free(cache);
 }
 
