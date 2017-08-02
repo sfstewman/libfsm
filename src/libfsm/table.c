@@ -44,6 +44,17 @@ count_edge_things(const struct fsm *fsm,
 	return 1;
 }
 
+static void
+preload_indices(const struct fsm *fsm, struct hmap *cache)
+{
+	struct fsm_state *s;
+	size_t i;
+
+	for (s = fsm->sl, i = 0; s != NULL; s = s->next, i++) {
+		hmap_setuint(cache, (void *)s, i);
+	}
+}
+
 static size_t
 indexof(const struct fsm *fsm, const struct fsm_state *state, struct hmap *cache)
 {
@@ -176,6 +187,7 @@ fsm_table(const struct fsm *fsm)
 	b.src = NULL;
 	b.si = 0;
 	b.cache = hmap_create_pointer(NBUCKETS, 0.65f);
+	preload_indices(fsm, b.cache);
 	fsm_walk_states(fsm, &b, build_state_info);
 	fsm_walk_edges(fsm, &b, build_edge_info);
 	hmap_free(b.cache);

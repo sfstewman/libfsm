@@ -22,6 +22,17 @@
 
 #include "libfsm/out.h"
 
+static void
+preload_indices(const struct fsm *fsm, struct hmap *cache)
+{
+	struct fsm_state *s;
+	size_t i;
+
+	for (s = fsm->sl, i = 0; s != NULL; s = s->next, i++) {
+		hmap_setuint(cache, (void *)s, i);
+	}
+}
+
 static unsigned int
 indexof(const struct fsm *fsm, const struct fsm_state *state, struct hmap *cache)
 {
@@ -275,6 +286,7 @@ fsm_out_fsm(const struct fsm *fsm, FILE *f)
 {
 	struct hmap *cache;
 	cache = hmap_create_pointer(NBUCKETS, 0.6f);
+	preload_indices(fsm, cache);
 	fsm_out_fsm_inner(fsm, f, cache);
 	hmap_free(cache);
 }
