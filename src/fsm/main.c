@@ -297,6 +297,7 @@ main(int argc, char *argv[])
 	enum op op;
 	struct fsm *fsm;
 	int xfiles;
+        int pause;
 	int r;
 
 	int (*query)(const struct fsm *, const struct fsm_state *);
@@ -308,6 +309,7 @@ main(int argc, char *argv[])
 
 	xfiles = 0;
 	print  = NULL;
+        pause  = 0;
 	query  = NULL;
 	walk   = NULL;
 	op     = OP_IDENTITY;
@@ -319,7 +321,7 @@ main(int argc, char *argv[])
 	{
 		int c;
 
-		while (c = getopt(argc, argv, "h" "acwXe:k:i:" "xpq:l:dmrt:"), c != -1) {
+		while (c = getopt(argc, argv, "h" "P" "acwXe:k:i:" "xpq:l:dmrt:"), c != -1) {
 			switch (c) {
 			case 'a': opt.anonymous_states  = 1;          break;
 			case 'c': opt.consolidate_edges = 1;          break;
@@ -342,6 +344,8 @@ main(int argc, char *argv[])
 			case 'm': op = op_name("minimise");           break;
 			case 'r': op = op_name("reverse");            break;
 			case 't': op = op_name(optarg);               break;
+
+                        case 'P': pause = 1;                          break;
 
 			case 'h':
 				usage();
@@ -405,6 +409,13 @@ main(int argc, char *argv[])
 		if (-1 == clock_gettime(CLOCK_MONOTONIC, &pre)) {
 			perror("clock_gettime");
 			exit(EXIT_FAILURE);
+		}
+
+		if (pause) {
+			char buf[256];
+                        fprintf(stderr, "PAUSED, press enter/return\n");
+			/* XXX - quick and dirty */
+			fgets(buf, sizeof buf, stdin);
 		}
 
 		/* within this block, r is API convention (true for success) */
