@@ -18,21 +18,8 @@ struct bucket {
 	void *item;
 };
 
-struct hashset {
-	size_t nbuckets;
-	size_t nitems;
-	struct bucket *buckets;
-	size_t maxload;
-	int (*cmp)(const void *,const void *);
-	unsigned long (*hash)(const void *);
-	float load;
-};
-
 #define TOMBSTONE_HASH (~(0UL))
 #define UNSET_HASH     (0UL)
-
-#define DEFAULT_LOAD 0.66
-#define DEFAULT_NBUCKETS 4
 
 static int
 is_pow2(size_t n) {
