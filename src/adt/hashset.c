@@ -1,5 +1,5 @@
 /*
- * Copyright 2008-2017 Katherine Flavel
+ * Copyright 2018- Shannon Stewman
  *
  * See LICENCE for the full copyright terms.
  */
