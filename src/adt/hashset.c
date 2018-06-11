@@ -57,18 +57,29 @@ finditem(const struct hashset *s, unsigned long hash, const void *item, size_t *
 	return 0;
 }
 
+int
+hashset_initialize(struct hashset *s, size_t nb, float load,
+	unsigned long (*hash)(const void *a),int (*cmp)(const void *a, const void *b))
+{
+	static const struct hashset init;
+	*s = init;
+	s->hash = hash;
+	s->cmp = cmp;
+	s->load = load;
+	if (nb == 0) {
+		return 1;
+	}
+
+	s->buckets = calloc(nb, sizeof s->buckets[0]);
+	s->maxload = load * nb;
+	return (s->buckets != NULL);
+}
+
 struct hashset *
 hashset_create(unsigned long (*hash)(const void *a),int (*cmp)(const void *a, const void *b))
 {
 	struct hashset *s = malloc(sizeof *s);
-	s->nbuckets = 0;
-	s->nitems = 0;
-	s->buckets = NULL;
-	s->maxload = 0;
-	s->hash = hash;
-	s->cmp = cmp;
-	s->load = DEFAULT_LOAD;
-
+	hashset_initialize(s, 0,DEFAULT_LOAD, hash,cmp);
 	return s;
 }
 
@@ -154,23 +165,33 @@ hashset_add(struct hashset *s, void *item)
 	return item;
 }
 
-void
+int
 hashset_remove(struct hashset *s, void *item)
 {
 	size_t b;
 	unsigned long h = s->hash(item);
 	b = 0;
-	if (s->nitems > 0 && finditem(s,h,item,&b)) {
-		s->buckets[b].item = NULL;
-		s->buckets[b].hash = TOMBSTONE_HASH;
-		s->nitems--;
+	if (s->nitems == 0 || !finditem(s,h,item,&b)) {
+		return 0;
 	}
+
+	s->buckets[b].item = NULL;
+	s->buckets[b].hash = TOMBSTONE_HASH;
+	s->nitems--;
+
+	return 1;
+}
+
+void
+hashset_finalize(struct hashset *s)
+{
+	free(s->buckets);
 }
 
 void
 hashset_free(struct hashset *s)
 {
-	free(s->buckets);
+	hashset_finalize(s);
 	free(s);
 }
 
@@ -234,29 +255,33 @@ hashset_empty(const struct hashset *s)
 	return s->nitems == 0;
 }
 
+static void *
+hs_next(const struct hashset *s, size_t *ip)
+{
+	size_t i = *ip, nb = s->nbuckets;
+	for (; i < nb; i++) {
+		if (s->buckets[i].item != NULL) {
+			*ip = i+1;
+			return s->buckets[i].item;
+		}
+	}
+
+	*ip = nb;
+	return NULL;
+}
+
 void *
 hashset_first(const struct hashset *s, struct hashset_iter *it)
 {
 	it->set = s;
 	it->i = 0;
-	return hashset_next(it);
+	return hs_next(s, &it->i);
 }
 
 void *
 hashset_next(struct hashset_iter *it)
 {
-	const struct hashset *s = it->set;
-
-	size_t i = it->i, nb = s->nbuckets;
-	for (; i < nb; i++) {
-		if (s->buckets[i].item != NULL) {
-			it->i = i+1;
-			return s->buckets[i].item;
-		}
-	}
-
-	it->i = nb;
-	return NULL;
+	return hs_next(it->set, &it->i);
 }
 
 /*
@@ -284,21 +309,25 @@ hashset_only(const struct hashset *s)
 	abort();
 }
 
-int
-hashset_hasnext(struct hashset_iter *it)
+static int
+hs_hasnext(const struct hashset *s, size_t *ip)
 {
-	const struct hashset *s = it->set;
-
-	size_t i = it->i, nb = s->nbuckets;
+	size_t i = *ip, nb = s->nbuckets;
 	for (; i < nb; i++) {
 		if (s->buckets[i].item != NULL) {
-			it->i = i;
+			*ip = i;
 			return 1;
 		}
 	}
 
-	it->i = nb;
+	*ip = nb;
 	return 0;
+}
+
+int
+hashset_hasnext(struct hashset_iter *it)
+{
+	return hs_hasnext(it->set, &it->i);
 }
 
 extern int
@@ -335,5 +364,275 @@ hashrec(const void *p, size_t n) {
 	memcpy(&h, &ha[0], sizeof h);
 
 	return h;
+}
+
+struct sortedset *
+sortedset_create(unsigned long (*hash)(const void *a),int (*cmp)(const void *a, const void *b))
+{
+	static const struct sortedset init;
+	struct sortedset *s;
+	s = malloc(sizeof *s);
+	*s = init;
+
+	hashset_initialize(&s->hs, 0,DEFAULT_LOAD, hash,cmp);
+
+	return s;
+}
+
+static void
+sortedset_markdirty(struct sortedset *s)
+{
+	if (s->hs.flags & SORTEDSET_FROZEN) {
+		s->hs.flags ^= SORTEDSET_FROZEN;
+	}
+}
+
+void *
+sortedset_add(struct sortedset *s, void *item)
+{
+	void *ret = hashset_add(&s->hs, item);
+	sortedset_markdirty(s);
+	return ret;
+}
+
+int
+sortedset_remove(struct sortedset *s, void *item)
+{
+	int ret = hashset_remove(&s->hs,item);
+	if (ret) {
+		sortedset_markdirty(s);
+	}
+	return ret;
+}
+
+void
+sortedset_free(struct sortedset *s)
+{
+	hashset_finalize(&s->hs);
+	free(s->sorted);
+	free(s);
+}
+
+size_t
+sortedset_count(const struct sortedset *s)
+{
+	return hashset_count(&s->hs);
+}
+
+void
+sortedset_clear(struct sortedset *s)
+{
+	hashset_clear(&s->hs);
+	s->len = 0;
+}
+
+/*
+ * Find if an item is in a set, and return it.
+ */
+void *
+sortedset_contains(const struct sortedset *s, const void *item)
+{
+	return hashset_contains(&s->hs, item);
+}
+
+/*
+ * Compare two sets for equality.
+ */
+int
+sortedset_equal(const struct sortedset *a, const struct sortedset *b)
+{
+	if (sortedset_ordered(a) && sortedset_ordered(b)) {
+		return sortedset_full_cmp(a,b);
+	}
+
+	return hashset_equal(&a->hs, &b->hs);
+}
+
+int
+sortedset_full_cmp(const struct sortedset *a, const struct sortedset *b)
+{
+	size_t i,n;
+	int (*cmp)(const void *, const void *);
+
+	n = a->len;
+	if (n != b->len) {
+		return (b->len > n) - (n > b->len);
+	}
+
+	cmp = a->hs.cmp;
+	if (cmp != b->hs.cmp) {
+		abort();
+	}
+
+	for (i=0; i < n; i++) {
+		int c = cmp(a->sorted[i], b->sorted[i]);
+		if (c != 0) {
+			return c;
+		}
+	}
+
+	return 0;
+}
+
+int
+sortedset_empty(const struct sortedset *s)
+{
+	return hashset_empty(&s->hs);
+}
+
+void *
+sortedset_first(const struct sortedset *s, struct sortedset_iter *it)
+{
+	it->set = s;
+	it->i=0;
+
+	if (sortedset_ordered(s)) {
+		return s->len > 0 ? s->sorted[it->i++] : NULL;
+	}
+
+	return hs_next(&s->hs, &it->i);
+}
+
+void *
+sortedset_next(struct sortedset_iter *it)
+{
+	const struct sortedset *s = it->set;
+	if (sortedset_ordered(s)) {
+		return it->i < s->len ? s->sorted[it->i++] : NULL;
+	}
+
+	return hs_next(&s->hs, &it->i);
+}
+
+/*
+ * Return the sole item for a singleton set.
+ */
+void *
+sortedset_only(const struct sortedset *s)
+{
+	if (sortedset_ordered(s)) {
+		return (s->len > 0) ? s->sorted[0] : NULL;
+	}
+
+	return hashset_only(&s->hs);
+}
+
+int
+sortedset_hasnext(struct sortedset_iter *it)
+{
+	const struct sortedset *s = it->set;
+	if (sortedset_ordered(s)) {
+		return it->i < s->len;
+	}
+
+	return hs_hasnext(&s->hs, &it->i);
+}
+
+static void
+insertion_sort_elements(void **base, size_t nelts, int (*cmp)(const void *,const void *))
+{
+	size_t i;
+
+	for (i=1; i < nelts; i++) {
+		void *x = base[i];
+		size_t j = i;
+
+		while (j > 0 && cmp(x,base[j-1]) < 0) {
+			base[j] = base[j-1];
+			j--;
+		}
+
+		base[j] = x;
+	}
+}
+
+#define TOO_SMALL_FOR_QUICK_SORT 8
+
+#define SWAP(i,j) do { size_t i_ = (i); size_t j_ = (j);\
+	void *tmp = base[i_]; base[i_] = base[j_]; base[j_] = tmp; \
+} while(0)
+#define CMP(i,j) (cmp(base[(i)],base[(j)]))
+
+static void
+quick_sort_elements(void** base, size_t nelts, int (*cmp)(const void *,const void *))
+{
+	size_t i, pivot, end;
+
+	if (nelts <= TOO_SMALL_FOR_QUICK_SORT) {
+		insertion_sort_elements(base,nelts,cmp);
+		return;
+	}
+
+	/* choose pivot
+	 *
+	 * XXX - should change to something more robust like
+	 * median-of-medians
+	 */
+	pivot = nelts/2;
+	end = nelts-1;
+
+	SWAP(pivot,end);
+
+	pivot = 0;
+	for (i=0; i < end; i++) {
+		if ( CMP(i,end) <= 0 ) {
+			SWAP(i,pivot);
+			pivot++;
+		}
+	}
+
+	SWAP(pivot,end);
+
+	if (pivot > 0) {
+		quick_sort_elements(&base[0], pivot, cmp);
+	}
+
+	if (pivot < nelts-1) {
+		quick_sort_elements(&base[pivot+1], nelts-pivot-1, cmp);
+	}
+}
+
+#undef SWAP
+#undef CMP
+
+
+int
+sortedset_freeze(struct sortedset *set)
+{
+	size_t i,n,nb;
+	void **p;
+
+	nb = set->hs.nbuckets;
+	n = set->hs.nitems;
+
+	p = set->sorted;
+	if (set->max < n) {
+		p = realloc(set->sorted, n * sizeof *p);
+
+		if (p == NULL) {
+			return 0;
+		}
+
+		set->sorted = p;
+		set->max = n;
+	}
+
+	set->len = 0;
+	memset(&p[0], 0, set->max * sizeof p[0]);
+	for (i=0; i < nb; i++) {
+		void *item = set->hs.buckets[i].item;
+		if (item != NULL) {
+			assert(set->len < n);
+			p[set->len++] = item;
+		}
+	}
+
+	/* sort elements */
+	/* XXX: replace this with something better */
+	qsort((void *)(&p[0]), set->len, sizeof p[0], set->hs.cmp);
+	quick_sort_elements(&p[0], set->len, set->hs.cmp);
+
+	set->hs.flags |= SORTEDSET_FROZEN;
+	return 1;
 }
 

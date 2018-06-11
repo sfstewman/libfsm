@@ -53,6 +53,7 @@ SUBDIR += tests/reverse
 SUBDIR += tests/union
 SUBDIR += tests/set
 SUBDIR += tests/hashset
+SUBDIR += tests/sortedset
 SUBDIR += tests
 .if !empty(.TARGETS:Mfuzz)
 SUBDIR += fuzz
