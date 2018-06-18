@@ -191,8 +191,10 @@ hashset_finalize(struct hashset *s)
 void
 hashset_free(struct hashset *s)
 {
-	hashset_finalize(s);
-	free(s);
+	if (s != NULL) {
+		hashset_finalize(s);
+		free(s);
+	}
 }
 
 size_t
@@ -408,9 +410,11 @@ sortedset_remove(struct sortedset *s, void *item)
 void
 sortedset_free(struct sortedset *s)
 {
-	hashset_finalize(&s->hs);
-	free(s->sorted);
-	free(s);
+	if (s != NULL) {
+		hashset_finalize(&s->hs);
+		free(s->sorted);
+		free(s);
+	}
 }
 
 size_t
