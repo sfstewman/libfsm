@@ -182,7 +182,8 @@ fsm_out_api(const struct fsm *fsm, FILE *f)
 	for (s = fsm->sl; s != NULL; s = s->next) {
 		struct fsm_edge *e;
 		struct fsm_state *st;
-		struct set_iter it, jt;
+		struct edge_iter it;
+                struct state_iter jt;
 		unsigned int from, to;
 		unsigned int i;
 
@@ -192,8 +193,8 @@ fsm_out_api(const struct fsm *fsm, FILE *f)
 			bm_clear(&a[i]);
 		}
 
-		for (e = set_first(s->edges, &it); e != NULL; e = set_next(&it)) {
-			for (st = set_first(e->sl, &jt); st != NULL; st = set_next(&jt)) {
+		for (e = edge_set_first(s->edges, &it); e != NULL; e = edge_set_next(&it)) {
+			for (st = state_set_first(e->sl, &jt); st != NULL; st = state_set_next(&jt)) {
 				assert(st != NULL);
 
 				to = indexof(fsm, st);

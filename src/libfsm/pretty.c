@@ -20,14 +20,14 @@
 static int
 selfepsilonstate(struct fsm_state *s, int *changed)
 {
-	struct set_iter it;
+	struct edge_iter it;
 	struct fsm_state *to;
 	struct fsm_edge *e;
 
 next1:
 
-	for (e = set_first(s->edges, &it); e != NULL; e = set_next(&it)) {
-		struct set_iter jt;
+	for (e = edge_set_first(s->edges, &it); e != NULL; e = edge_set_next(&it)) {
+		struct state_iter jt;
 
 		if (e->symbol != FSM_EDGE_EPSILON) {
 			continue;
@@ -35,20 +35,20 @@ next1:
 
 next0:
 
-		for (to = set_first(e->sl, &jt); to != NULL; to = set_next(&jt)) {
+		for (to = state_set_first(e->sl, &jt); to != NULL; to = state_set_next(&jt)) {
 			if (to != s) {
 				continue;
 			}
 
-			set_remove(&e->sl, to);
+			state_set_remove(e->sl, to);
 
 			*changed = 1;
 
 			goto next0; /* XXX */
 		}
 
-		if (set_empty(e->sl)) {
-			set_remove(&s->edges, e);
+		if (state_set_empty(e->sl)) {
+			edge_set_remove(s->edges, e);
 
 			goto next1; /* XXX */
 		}
@@ -62,7 +62,7 @@ static struct fsm_state *
 merge(struct fsm *fsm, struct fsm_state *x, struct fsm_state *y)
 {
 	struct fsm_state *q;
-	struct set *dummy;
+	struct set0 *dummy;
 	int start, end;
 
 	/* XXX: seems like something fsm_mergestates() ought to do */
@@ -76,7 +76,7 @@ merge(struct fsm *fsm, struct fsm_state *x, struct fsm_state *y)
 			void *opaque;
 
 			opaque = fsm_getopaque(fsm, x);
-			if (opaque != NULL && !set_add(&dummy, opaque)) {
+			if (opaque != NULL && !set0_add(&dummy, opaque)) {
 				goto error;
 			}
 		}
@@ -85,7 +85,7 @@ merge(struct fsm *fsm, struct fsm_state *x, struct fsm_state *y)
 			void *opaque;
 
 			opaque = fsm_getopaque(fsm, y);
-			if (opaque != NULL && !set_add(&dummy, opaque)) {
+			if (opaque != NULL && !set0_add(&dummy, opaque)) {
 				goto error;
 			}
 		}
@@ -103,10 +103,10 @@ merge(struct fsm *fsm, struct fsm_state *x, struct fsm_state *y)
 	if (end) {
 		fsm_setend(fsm, q, 1);
 
-		if (!set_empty(dummy)) {
+		if (!set0_empty(dummy)) {
 			fsm_carryopaque(fsm, dummy, fsm, q);
 
-			set_free(dummy);
+			set0_free(dummy);
 		}
 	}
 
@@ -141,14 +141,15 @@ singleepsilonsource(const struct fsm *fsm, const struct fsm_state *state)
 
 	for (s = fsm->sl; s != NULL; s = s->next) {
 		struct fsm_edge *e;
-		struct set_iter it, jt;
+		struct edge_iter it;
 
 		if (s == state) {
 			continue;
 		}
 
-		for (e = set_first(s->edges, &it); e != NULL; e = set_next(&it)) {
-			for (to = set_first(e->sl, &jt); to != NULL; to = set_next(&jt)) {
+		for (e = edge_set_first(s->edges, &it); e != NULL; e = edge_set_next(&it)) {
+                  struct state_iter jt;
+			for (to = state_set_first(e->sl, &jt); to != NULL; to = state_set_next(&jt)) {
 				if (to != state) {
 					continue;
 				}
@@ -180,22 +181,22 @@ singleepsilontarget(const struct fsm_state *state)
 
 	assert(state != NULL);
 
-	if (set_count(state->edges) != 1) {
+	if (edge_set_count(state->edges) != 1) {
 		return NULL;
 	}
 
-	e = set_only(state->edges);
+	e = edge_set_only(state->edges);
 	assert(e != NULL);
 
 	if (e->symbol != FSM_EDGE_EPSILON) {
 		return NULL;
 	}
 
-	if (set_count(e->sl) != 1) {
+	if (state_set_count(e->sl) != 1) {
 		return NULL;
 	}
 
-	to = set_only(e->sl);
+	to = state_set_only(e->sl);
 	if (to == NULL) {
 		return NULL;
 	}
@@ -310,20 +311,21 @@ endepsilons(struct fsm *fsm, int *changed)
 	for (s = fsm->sl; s != NULL; s = s->next) {
 		struct fsm_state *to;
 		struct fsm_edge *e;
-		struct set_iter it, jt;
+		struct edge_iter it;
 
 		if (!fsm_isend(fsm, s)) {
 			continue;
 		}
 
-		for (e = set_first(s->edges, &it); e != NULL; e = set_next(&it)) {
+		for (e = edge_set_first(s->edges, &it); e != NULL; e = edge_set_next(&it)) {
+			struct state_iter jt;
 			if (e->symbol != FSM_EDGE_EPSILON) {
 				continue;
 			}
 
 next0:
 
-			for (to = set_first(e->sl, &jt); to != NULL; to = set_next(&jt)) {
+			for (to = state_set_first(e->sl, &jt); to != NULL; to = state_set_next(&jt)) {
 				if (!fsm_isend(fsm, to)) {
 					continue;
 				}
@@ -334,7 +336,7 @@ next0:
 					goto next1; /* XXX */
 				}
 
-				set_remove(&e->sl, to);
+				state_set_remove(&e->sl, to);
 
 				*changed = 1;
 
@@ -357,14 +359,15 @@ propogateend(struct fsm *fsm, int *changed)
 	for (s = fsm->sl; s != NULL; s = s->next) {
 		struct fsm_state *to;
 		struct fsm_edge *e;
-		struct set_iter it, jt;
+		struct edge_iter it;
 
-		for (e = set_first(s->edges, &it); e != NULL; e = set_next(&it)) {
+		for (e = edge_set_first(s->edges, &it); e != NULL; e = edge_set_next(&it)) {
+			struct state_iter jt;
 			if (e->symbol != FSM_EDGE_EPSILON) {
 				continue;
 			}
 
-			for (to = set_first(e->sl, &jt); to != NULL; to = set_next(&jt)) {
+			for (to = state_set_first(e->sl, &jt); to != NULL; to = state_set_next(&jt)) {
 				if (!fsm_isend(fsm, to)) {
 					continue;
 				}

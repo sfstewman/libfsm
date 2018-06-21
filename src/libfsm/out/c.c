@@ -170,9 +170,9 @@ singlecase(FILE *f, const struct fsm *fsm,
 	/* no edges */
 	{
 		struct fsm_edge *e;
-		struct set_iter it;
+		struct edge_iter it;
 
-		e = set_first(state->edges, &it);
+		e = edge_set_first(state->edges, &it);
 		if (!e || e->symbol > UCHAR_MAX) {
 			fprintf(f, "\t\t\t");
 			leaf(f, fsm, state, opaque);
@@ -204,20 +204,20 @@ singlecase(FILE *f, const struct fsm *fsm,
 	/* usual case */
 	{
 		struct fsm_edge *e;
-		struct set_iter it;
+		struct edge_iter it;
 
-		for (e = set_first(state->edges, &it); e != NULL; e = set_next(&it)) {
+		for (e = edge_set_first(state->edges, &it); e != NULL; e = edge_set_next(&it)) {
 			struct fsm_state *s;
 
 			if (e->symbol > UCHAR_MAX) {
 				break;
 			}
 
-			if (set_empty(e->sl)) {
+			if (state_set_empty(e->sl)) {
 				continue;
 			}
 
-			s = set_only(e->sl);
+			s = state_set_only(e->sl);
 			if (s == mode.state) {
 				continue;
 			}
@@ -228,15 +228,15 @@ singlecase(FILE *f, const struct fsm *fsm,
 			if (fsm->opt->case_ranges) {
 				const struct fsm_edge *ne;
 				enum fsm_edge_type p, q;
-				struct set_iter ic, ir;
+				struct edge_iter ic, ir;
 
 				ir = ic = it;
 				p = q = e->symbol;
-				ne = set_next(&ic);
+				ne = edge_set_next(&ic);
 				while (ne && ne->symbol - q == 1) {
 					q = ne->symbol;
 					ir = ic;
-					ne = set_next(&ic);
+					ne = edge_set_next(&ic);
 				}
 
 				if (q - p) {
@@ -251,13 +251,13 @@ singlecase(FILE *f, const struct fsm *fsm,
 			/* non-unique states fall through */
 			if (!fsm->opt->case_ranges && e->symbol <= UCHAR_MAX - 1) {
 				const struct fsm_edge *ne;
-				struct set_iter jt;
+				struct edge_iter jt;
 
-				ne = set_firstafter(state->edges, &jt, e);
-				if (ne && ne->symbol == e->symbol + 1 && !set_empty(ne->sl)) {
+				ne = edge_set_firstafter(state->edges, &jt, e);
+				if (ne && ne->symbol == e->symbol + 1 && !state_set_empty(ne->sl)) {
 					const struct fsm_state *ns;
 
-					ns = set_only(ne->sl);
+					ns = state_set_only(ne->sl);
 					if (ns != mode.state && ns == s) {
 						fprintf(f, "\n");
 						continue;

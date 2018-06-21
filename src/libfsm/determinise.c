@@ -30,6 +30,71 @@ struct trans {
 	char c;
 };
 
+struct trans_set {
+	struct set0 *set;
+};
+
+static int
+cmp_trans(const void *a, const void *b);
+
+static struct trans_set *
+trans_set_create(void)
+{
+	static const struct trans_set init;
+	struct trans_set *set;
+
+	set = malloc(sizeof *set);
+	*set = init;
+	set->set = set0_create(cmp_trans);
+	return set;
+}
+
+static void
+trans_set_free(struct trans_set *set)
+{
+	if (set != NULL) {
+		if (set->set != NULL) {
+			set0_free(set->set);
+			set->set = NULL;
+		}
+		free(set);
+	}
+}
+
+struct trans_iter {
+	struct set0_iter iter;
+};
+
+static struct trans *
+trans_set_add(struct trans_set *set, struct trans *item)
+{
+	return set0_add(&set->set, item);
+}
+
+static struct trans *
+trans_set_contains(const struct trans_set *set, const struct trans *item)
+{
+	return set0_contains(set->set, item);
+}
+
+static void
+trans_set_clear(struct trans_set *set)
+{
+	set0_clear(set->set);
+}
+
+static struct trans *
+trans_set_first(const struct trans_set *set, struct trans_iter *it)
+{
+	return set0_first(set->set, &it->iter);
+}
+
+static struct trans *
+trans_set_next(struct trans_iter *it)
+{
+	return set0_next(&it->iter);
+}
+
 /*
  * This maps a DFA state onto its associated NFA epsilon closure, such that an
  * existing DFA state may be found given any particular set of NFA states
@@ -39,7 +104,7 @@ struct trans {
  */
 struct mapping {
 	/* The set of NFA states forming the epsilon closure for this DFA state */
-	struct set *closure;
+	struct state_set *closure;
 
 	/* The DFA state associated with this epsilon closure of NFA states */
 	struct fsm_state *dfastate;
@@ -49,35 +114,100 @@ struct mapping {
 };
 
 struct fsm_determinise_cache {
-	struct set *mappings;
-	struct set *trans;
+	struct mapping_set *mappings;
+	struct trans_set *trans;
 };
 
-static void
-clear_trans(struct set *trans)
+struct mapping_set {
+	struct set0 *set;
+};
+
+static int
+cmp_mapping(const void *a, const void *b);
+
+struct mapping_set *
+mapping_set_create(void)
 {
-	struct set_iter it;
-	struct trans *t;
+	static const struct mapping_set init;
+	struct mapping_set *set;
 
-	for (t = set_first(trans, &it); t != NULL; t = set_next(&it)) {
-		free(t);
+	set = malloc(sizeof *set);
+	*set = init;
+	set->set = set0_create(cmp_mapping);
+	return set;
+}
+
+void
+mapping_set_free(struct mapping_set *set)
+{
+	if (set != NULL) {
+		if (set->set != NULL) {
+			set0_free(set->set);
+			set->set = NULL;
+		}
+		free(set);
 	}
+}
 
-	set_clear(trans);
+struct mapping *
+mapping_set_add(struct mapping_set *set, struct mapping *item)
+{
+	return set0_add(&set->set, item);
+}
+
+struct mapping *
+mapping_set_contains(const struct mapping_set *set, const struct mapping *item)
+{
+	return set0_contains(set->set, item);
+}
+
+void
+mapping_set_clear(struct mapping_set *set)
+{
+	set0_clear(set->set);
+}
+
+struct mapping_iter {
+	struct set0_iter iter;
+};
+
+static struct mapping *
+mapping_set_first(const struct mapping_set *set, struct mapping_iter *it)
+{
+	return set0_first(set->set, &it->iter);
+}
+
+static struct mapping *
+mapping_set_next(struct mapping_iter *it)
+{
+	return set0_next(&it->iter);
 }
 
 static void
-clear_mappings(struct set *mappings)
+clear_trans(struct trans_set *trans)
 {
-	struct set_iter it;
+	struct trans_iter it;
+	struct trans *t;
+
+	for (t = trans_set_first(trans, &it); t != NULL; t = trans_set_next(&it)) {
+		free(t);
+	}
+
+	trans_set_clear(trans);
+}
+
+static void
+clear_mappings(struct mapping_set *mappings)
+{
+	struct mapping_iter it;
 	struct mapping *m;
 
-	for (m = set_first(mappings, &it); m != NULL; m = set_next(&it)) {
-		set_free(m->closure);
+	for (m = mapping_set_first(mappings, &it); m != NULL; m = mapping_set_next(&it)) {
+		state_set_free(m->closure);
 		free(m);
 	}
 
-	set_clear(mappings);
+	mapping_set_clear(mappings);
 }
 
 static int
@@ -105,7 +235,26 @@ cmp_mapping(const void *a, const void *b)
 	ma = a;
 	mb = b;
 
-	return set_cmp(ma->closure, mb->closure);
+	/* return set_cmp(ma->closure, mb->closure); */
+	return state_set_cmp(ma->closure, mb->closure);
+}
+
+static struct mapping *
+mapping_create(struct state_set *closure, struct fsm_state *dfastate)
+{
+	static const struct mapping init;
+	struct mapping *m;
+
+	m = malloc(sizeof *m);
+	if (m == NULL) {
+		return NULL;
+	}
+
+	*m = init;
+	m->closure = closure;
+	m->dfastate = dfastate;
+
+	return m;
 }
 
 /*
@@ -116,35 +265,38 @@ cmp_mapping(const void *a, const void *b)
  * the mapping set for future reference.
  */
 static struct mapping *
-addtomappings(struct set *mappings, struct fsm *dfa, struct set *closure)
+addtomappings(struct mapping_set *mappings, struct fsm *dfa, struct state_set *closure)
 {
 	struct mapping *m, search;
+	struct fsm_state *dfastate;
 
 	/* Use an existing mapping if present */
 	search.closure = closure;
-	if ((m = set_contains(mappings, &search))) {
-		set_free(closure);
+	if ((m = mapping_set_contains(mappings, &search))) {
+		state_set_free(closure);
 		return m;
 	}
 
 	/* else add new DFA state */
-	m = malloc(sizeof *m);
-	if (m == NULL) {
+	dfastate = fsm_addstate(dfa);
+	if (dfastate == NULL) {
 		return NULL;
 	}
 
-	assert(closure != NULL);
-	m->closure  = closure;
-	m->dfastate = fsm_addstate(dfa);
-	if (m->dfastate == NULL) {
-		free(m);
+	m = mapping_create(closure, dfastate);
+	if (m == NULL) {
+		fsm_removestate(dfa, dfastate);
+		free(dfastate);
 		return NULL;
 	}
 
 	m->done = 0;
 
-	if (!set_add(&mappings, m)) {
+	if (!mapping_set_add(mappings, m)) {
 		free(m);
+		fsm_removestate(dfa,dfastate);
+		free(dfastate);
+
 		return NULL;
 	}
 
@@ -165,28 +317,28 @@ addtomappings(struct set *mappings, struct fsm *dfa, struct set *closure)
  *
  * Returns closure on success, NULL on error.
  */
-static struct set **
-epsilon_closure(const struct fsm_state *state, struct set **closure)
+static struct state_set *
+epsilon_closure(const struct fsm_state *state, struct state_set *closure)
 {
 	struct fsm_state *s;
 	struct fsm_edge *e;
-	struct set_iter it;
+	struct state_iter it;
 
 	assert(state != NULL);
 	assert(closure != NULL);
 
 	/* Find if the given state is already in the closure */
-	if (set_contains(*closure, state)) {
+	if (state_set_contains(closure, state)) {
 		return closure;
 	}
 
-	if (!set_add(closure, (void *) state)) {
+	if (!state_set_add(closure, (struct fsm_state *)state)) {
 		return NULL;
 	}
 
 	/* Follow each epsilon transition */
 	if ((e = fsm_hasedge(state, FSM_EDGE_EPSILON)) != NULL) {
-		for (s = set_first(e->sl, &it); s != NULL; s = set_next(&it)) {
+		for (s = state_set_first(e->sl, &it); s != NULL; s = state_set_next(&it)) {
 			assert(s != NULL);
 
 			if (epsilon_closure(s, closure) == NULL) {
@@ -203,27 +355,27 @@ epsilon_closure(const struct fsm_state *state, struct set **closure)
  * Create the DFA state if neccessary.
  */
 static struct fsm_state *
-state_closure(struct set *mappings, struct fsm *dfa, const struct fsm_state *nfastate,
+state_closure(struct mapping_set *mappings, struct fsm *dfa, const struct fsm_state *nfastate,
 	int includeself)
 {
 	struct mapping *m;
-	struct set *ec;
+	struct state_set *ec;
 
 	assert(dfa != NULL);
 	assert(nfastate != NULL);
 	assert(mappings != NULL);
 
-	ec = NULL;
-	if (epsilon_closure(nfastate, &ec) == NULL) {
-		set_free(ec);
+	ec = state_set_create();
+	if (epsilon_closure(nfastate, ec) == NULL) {
+		state_set_free(ec);
 		return NULL;
 	}
 
 	if (!includeself) {
-		set_remove(&ec, (void *) nfastate);
+		state_set_remove(ec, nfastate);
 
-		if (set_count(ec) == 0) {
-			set_free(ec);
+		if (state_set_count(ec) == 0) {
+			state_set_free(ec);
 			ec = NULL;
 		}
 	}
@@ -245,20 +397,20 @@ state_closure(struct set *mappings, struct fsm *dfa, const struct fsm_state *nfa
  * states. Create the DFA state if neccessary.
  */
 static struct fsm_state *
-set_closure(struct set *mappings, struct fsm *dfa, struct set *set)
+set_closure(struct mapping_set *mappings, struct fsm *dfa, struct state_set *set)
 {
-	struct set_iter it;
-	struct set *ec;
+	struct state_iter it;
+	struct state_set *ec;
 	struct mapping *m;
 	struct fsm_state *s;
 
 	assert(set != NULL);
 	assert(mappings != NULL);
 
-	ec = NULL;
-	for (s = set_first(set, &it); s != NULL; s = set_next(&it)) {
-		if (epsilon_closure(s, &ec) == NULL) {
-			set_free(ec);
+	ec = state_set_create();
+	for (s = state_set_first(set, &it); s != NULL; s = state_set_next(&it)) {
+		if (epsilon_closure(s, ec) == NULL) {
+			state_set_free(ec);
 			return NULL;
 		}
 	}
@@ -269,8 +421,8 @@ set_closure(struct set *mappings, struct fsm *dfa, struct set *set)
 	return m->dfastate;
 }
 
-struct set_iter_save {
-	struct set_iter iter;
+struct mapping_iter_save {
+	struct mapping_iter iter;
 	int saved;
 };
 
@@ -278,9 +430,9 @@ struct set_iter_save {
  * Return an arbitary mapping which isn't marked "done" yet.
  */
 static struct mapping *
-nextnotdone(struct set *mappings, struct set_iter_save *sv)
+nextnotdone(struct mapping_set *mappings, struct mapping_iter_save *sv)
 {
-	struct set_iter it;
+	struct mapping_iter it;
 	struct mapping *m;
 	int do_rescan = sv->saved;
 
@@ -288,13 +440,13 @@ nextnotdone(struct set *mappings, struct set_iter_save *sv)
 
 	if (sv->saved) {
 		it = sv->iter;
-		m = set_next(&it);
+		m = mapping_set_next(&it);
 	} else {
-		m = set_first(mappings, &it);
+		m = mapping_set_first(mappings, &it);
 	}
 
 rescan:
-	for (; m != NULL; m = set_next(&it)) {
+	for (; m != NULL; m = mapping_set_next(&it)) {
 		if (!m->done) {
 			sv->saved = 1;
 			sv->iter = it;
@@ -303,7 +455,7 @@ rescan:
 	}
 
 	if (do_rescan) {
-		m = set_first(mappings, &it);
+		m = mapping_set_first(mappings, &it);
 		do_rescan = 0;
 		goto rescan;
 	}
@@ -318,34 +470,34 @@ rescan:
  * TODO: maybe simpler to just return the set, rather than take a double pointer
  */
 static int
-listnonepsilonstates(struct set *trans, struct set *set)
+listnonepsilonstates(struct trans_set *trans, struct state_set *set)
 {
 	struct fsm_state *s;
-	struct set_iter it;
+	struct state_iter it;
 
 	assert(set != NULL);
 	assert(trans != NULL);
 
-	for (s = set_first(set, &it); s != NULL; s = set_next(&it)) {
+	for (s = state_set_first(set, &it); s != NULL; s = state_set_next(&it)) {
 		struct fsm_edge *e;
-		struct set_iter jt;
+		struct edge_iter jt;
 
-		for (e = set_first(s->edges, &jt); e != NULL; e = set_next(&jt)) {
+		for (e = edge_set_first(s->edges, &jt); e != NULL; e = edge_set_next(&jt)) {
 			struct fsm_state *st;
-			struct set_iter kt;
+			struct state_iter kt;
 
 			if (e->symbol > UCHAR_MAX) {
 				break;
 			}
 
-			for (st = set_first(e->sl, &kt); st != NULL; st = set_next(&kt)) {
+			for (st = state_set_first(e->sl, &kt); st != NULL; st = state_set_next(&kt)) {
 				struct trans *p, search;
 
 				assert(st != NULL);
 
 				/* Skip transitions we've already got */
 				search.c = e->symbol;
-				if ((p = set_contains(trans, &search))) {
+				if ((p = trans_set_contains(trans, &search))) {
 					continue;
 				}
 
@@ -358,7 +510,7 @@ listnonepsilonstates(struct set *trans, struct set *set)
 				p->c = e->symbol;
 				p->state = st;
 
-				if (!set_add(&trans, p)) {
+				if (!trans_set_add(trans, p)) {
 					free(p);
 					clear_trans(trans);
 					return 0;
@@ -374,24 +526,24 @@ listnonepsilonstates(struct set *trans, struct set *set)
  * Return a list of all states reachable from set via the given transition.
  */
 static int
-allstatesreachableby(struct set *set, char c, struct set **sl)
+allstatesreachableby(struct state_set *set, char c, struct state_set *sl)
 {
 	struct fsm_state *s;
-	struct set_iter it;
+	struct state_iter it;
 
 	assert(set != NULL);
 
-	for (s = set_first(set, &it); s != NULL; s = set_next(&it)) {
+	for (s = state_set_first(set, &it); s != NULL; s = state_set_next(&it)) {
 		struct fsm_state *es;
 		struct fsm_edge *to;
 
 		if ((to = fsm_hasedge(s, (unsigned char) c)) != NULL) {
-			struct set_iter jt;
+			struct state_iter jt;
 
-			for (es = set_first(to->sl, &jt); es != NULL; es = set_next(&jt)) {
+			for (es = state_set_first(to->sl, &jt); es != NULL; es = state_set_next(&jt)) {
 				assert(es != NULL);
 
-				if (!set_add(sl, es)) {
+				if (!state_set_add(sl, es)) {
 					return 0;
 				}
 			}
@@ -402,16 +554,16 @@ allstatesreachableby(struct set *set, char c, struct set **sl)
 }
 
 static void
-carryend(struct set *set, struct fsm *fsm, struct fsm_state *state)
+carryend(struct state_set *set, struct fsm *fsm, struct fsm_state *state)
 {
-	struct set_iter it;
+	struct state_iter it;
 	struct fsm_state *s;
 
 	assert(set != NULL); /* TODO: right? */
 	assert(fsm != NULL);
 	assert(state != NULL);
 
-	for (s = set_first(set, &it); s != NULL; s = set_next(&it)) {
+	for (s = state_set_first(set, &it); s != NULL; s = state_set_next(&it)) {
 		if (fsm_isend(fsm, s)) {
 			fsm_setend(fsm, state, 1);
 		}
@@ -438,15 +590,15 @@ static struct fsm *
 determinise(struct fsm *nfa,
 	struct fsm_determinise_cache *dcache)
 {
-	const static struct set_iter_save sv_init;
+	const static struct mapping_iter_save sv_init;
 
 	struct mapping *curr;
-	struct set *mappings;
-	struct set_iter it;
-	struct set *trans;
+	struct mapping_set *mappings;
+	struct mapping_iter it;
+	struct trans_set *trans;
 	struct fsm *dfa;
 
-	struct set_iter_save sv;
+	struct mapping_iter_save sv;
 
 	assert(nfa != NULL);
 	assert(nfa->opt != NULL);
@@ -472,13 +624,13 @@ determinise(struct fsm *nfa,
 	}
 
 	if (dcache->mappings == NULL) {
-		dcache->mappings = set_create(cmp_mapping);
+		dcache->mappings = mapping_set_create();
 	}
 	mappings = dcache->mappings;
 	assert(mappings != NULL);
 
 	if (dcache->trans == NULL) {
-		dcache->trans = set_create(cmp_trans);
+		dcache->trans = trans_set_create();
 	}
 	trans = dcache->trans;
 	assert(trans != NULL);
@@ -528,8 +680,8 @@ determinise(struct fsm *nfa,
 	 * While there are still DFA states remaining to be "done", process each.
 	 */
 	sv = sv_init;
-	for (curr = set_first(mappings, &it); (curr = nextnotdone(mappings, &sv)) != NULL; curr->done = 1) {
-		struct set_iter jt;
+	for (curr = mapping_set_first(mappings, &it); (curr = nextnotdone(mappings, &sv)) != NULL; curr->done = 1) {
+		struct trans_iter jt;
 		struct trans *t;
 
 		/*
@@ -545,27 +697,27 @@ determinise(struct fsm *nfa,
 			goto error;
 		}
 
-		for (t = set_first(trans, &jt); t != NULL; t = set_next(&jt)) {
+		for (t = trans_set_first(trans, &jt); t != NULL; t = trans_set_next(&jt)) {
 			struct fsm_state *new;
 			struct fsm_edge *e;
-			struct set *reachable;
+			struct state_set *reachable;
 
 			assert(t->state != NULL);
 
-			reachable = NULL;
+			reachable = state_set_create();
 
 			/*
 			 * Find the closure of the set of all NFA states which are reachable
 			 * through this label, starting from the set of states forming curr's
 			 * closure.
 			 */
-			if (!allstatesreachableby(curr->closure, t->c, &reachable)) {
-				set_free(reachable);
+			if (!allstatesreachableby(curr->closure, t->c, reachable)) {
+				state_set_free(reachable);
 				goto error;
 			}
 
 			new = set_closure(mappings, dfa, reachable);
-			set_free(reachable);
+			state_set_free(reachable);
 			if (new == NULL) {
 				clear_trans(trans);
 				goto error;
@@ -636,8 +788,8 @@ fsm_determinise_cache(struct fsm *fsm,
 			return 0;
 		}
 
-		(*dcache)->mappings = NULL;
-		(*dcache)->trans    = NULL;
+		(*dcache)->mappings = mapping_set_create();
+		(*dcache)->trans    = trans_set_create();
 	}
 
 	dfa = determinise(fsm, *dcache);
@@ -682,11 +834,11 @@ fsm_determinise_freecache(struct fsm *fsm, struct fsm_determinise_cache *dcache)
 	clear_trans(dcache->trans);
 
 	if (dcache->mappings != NULL) {
-		set_free(dcache->mappings);
+		mapping_set_free(dcache->mappings);
 	}
 
 	if (dcache->trans != NULL) {
-		set_free(dcache->trans);
+		trans_set_free(dcache->trans);
 	}
 
 	free(dcache);

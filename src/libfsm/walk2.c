@@ -33,12 +33,98 @@ struct fsm_walk2_tuple {
 	struct fsm_state *comb;
 };
 
+struct tuple_set {
+	struct set0 *set;
+};
+
+/* comparison of fsm_walk2_tuples for the (ordered) set */
+static int
+cmp_walk2_tuple(const void *a, const void *b)
+{
+	const struct fsm_walk2_tuple *pa = a, *pb = b;
+	ptrdiff_t delta;
+
+	/* XXX: do we need to specially handle NULLs? */
+
+	delta = (pa->a > pb->a) - (pa->a < pb->a);
+	if (delta == 0) {
+		delta = (pa->b > pb->b) - (pa->b < pb->b);
+	}
+
+	return delta;
+}
+
+struct tuple_set *
+tuple_set_create(void)
+{
+	static const struct tuple_set init;
+	struct tuple_set *set;
+
+	set = malloc(sizeof *set);
+	if (!set) {
+		return NULL;
+	}
+	*set = init;
+	set->set = set0_create(cmp_walk2_tuple);
+	if (set->set == NULL) {
+		free(set);
+		return NULL;
+	}
+
+	return set;
+}
+
+void
+tuple_set_free(struct tuple_set *set)
+{
+	if (set == NULL) {
+		return;
+	}
+
+	if (set->set != NULL) {
+		set0_free(set->set);
+		set->set = NULL;
+	}
+
+	free(set);
+}
+
+static struct fsm_walk2_tuple *
+tuple_set_contains(struct tuple_set *set, const struct fsm_walk2_tuple *item)
+{
+	return set0_contains(set->set, (const void *)item);
+}
+
+static struct fsm_walk2_tuple *
+tuple_set_add(struct tuple_set *set, const struct fsm_walk2_tuple *item)
+{
+	return set0_add(&set->set, (void *)item);
+}
+
+struct tuple_iter {
+	struct set0_iter iter;
+};
+
+/*
+static struct fsm_walk2_tuple *
+tuple_set_first(const struct tuple_set *set, struct tuple_iter *iter)
+{
+	return set0_first(set->set, &iter->iter);
+}
+
+static struct fsm_walk2_tuple *
+tuple_set_next(struct tuple_iter *iter)
+{
+	return set0_next(&iter->iter);
+}
+*/
+
 struct fsm_walk2_data {
 	struct fsm_walk2_tuple_pool *head;
 	size_t top;
 
 	struct fsm *new;
-	struct set *states;
+	struct tuple_set *states;
 
 	/*
 	 * Table for which combinations are valid bits.
@@ -61,23 +147,6 @@ struct fsm_walk2_data {
 	unsigned endmask :4; /* bit table for what states are end states in the combined graph */
 	unsigned edgemask:4; /* bit table for which edges should be followed */
 };
-
-/* comparison of fsm_walk2_tuples for the (ordered) set */
-static int
-cmp_walk2_tuple(const void *a, const void *b)
-{
-	const struct fsm_walk2_tuple *pa = a, *pb = b;
-	ptrdiff_t delta;
-
-	/* XXX: do we need to specially handle NULLs? */
-
-	delta = (pa->a > pb->a) - (pa->a < pb->a);
-	if (delta == 0) {
-		delta = (pa->b > pb->b) - (pa->b < pb->b);
-	}
-
-	return delta;
-}
 
 /*
  * Size of the tuple pool (see comment in struct fsm_walk2_tuple_pool below).
@@ -105,7 +174,7 @@ fsm_walk2_data_free(struct fsm_walk2_data *data)
 	struct fsm_walk2_tuple_pool *p, *next;
 
 	if (data->states) {
-		set_free(data->states);
+		tuple_set_free(data->states);
 	}
 
 	if (data->new) {
@@ -180,7 +249,7 @@ fsm_walk2_tuple_new(struct fsm_walk2_data *data,
 
 	assert(data->states);
 
-	p = set_contains(data->states, &lkup);
+	p = tuple_set_contains(data->states, &lkup);
 	if (p != NULL) {
 		return p;
 	}
@@ -199,7 +268,7 @@ fsm_walk2_tuple_new(struct fsm_walk2_data *data,
 	p->a = a;
 	p->b = b;
 	p->comb = comb;
-	if (!set_add(&data->states, p)) {
+	if (!tuple_set_add(data->states, p)) {
 		return NULL;
 	}
 
@@ -253,7 +322,7 @@ fsm_walk2_edges(struct fsm_walk2_data *data,
 	const struct fsm *a, const struct fsm *b, struct fsm_walk2_tuple *start)
 {
 	struct fsm_state *qa, *qb, *qc;
-	struct set_iter ei, ej;
+	struct edge_iter ei, ej;
 	const struct fsm_edge *ea, *eb;
 
 	assert(a != NULL);
@@ -325,8 +394,8 @@ fsm_walk2_edges(struct fsm_walk2_data *data,
 	}
 
 	/* take care of only A and both A&B edges */
-	for (ea = set_first(qa->edges, &ei); ea != NULL; ea=set_next(&ei)) {
-		struct set_iter dia, dib;
+	for (ea = edge_set_first(qa->edges, &ei); ea != NULL; ea = edge_set_next(&ei)) {
+		struct state_iter dia, dib;
 		const struct fsm_state *da, *db;
 
 		eb = qb ? fsm_hasedge(qb, ea->symbol) : NULL;
@@ -339,8 +408,8 @@ fsm_walk2_edges(struct fsm_walk2_data *data,
 			continue;
 		}
 
-		for (da = set_first(ea->sl, &dia); da != NULL; da=set_next(&dia)) {
-			db = eb ? set_first(eb->sl, &dib) : NULL;
+		for (da = state_set_first(ea->sl, &dia); da != NULL; da = state_set_next(&dia)) {
+			db = eb ? state_set_first(eb->sl, &dib) : NULL;
 
 			/*
 			 * for loop with break to handle the situation where there is no
@@ -373,7 +442,7 @@ fsm_walk2_edges(struct fsm_walk2_data *data,
 
 				/* if db != NULL, fetch the next edge in B */
 				if (db != NULL) {
-					db = set_next(&dib);
+					db = state_set_next(&dib);
 				}
 
 				/* if db == NULL, stop iterating over edges in B */
@@ -392,8 +461,8 @@ only_b:
 	}
 
 	/* take care of only B edges */
-	for (eb = set_first(qb->edges, &ej); eb != NULL; eb=set_next(&ej)) {
-		struct set_iter dib;
+	for (eb = edge_set_first(qb->edges, &ej); eb != NULL; eb = edge_set_next(&ej)) {
+		struct state_iter dib;
 		const struct fsm_state *db;
 
 		ea = qa ? fsm_hasedge(qa, eb->symbol) : NULL;
@@ -407,7 +476,7 @@ only_b:
 		 * ONLYB loop is simpler because we only deal with
 		 * states in the B graph (the A state is always NULL)
 		 */
-		for (db = set_first(eb->sl, &dib); db != NULL; db=set_next(&dib)) {
+		for (db = state_set_first(eb->sl, &dib); db != NULL; db = state_set_next(&dib)) {
 			for (;;) {
 				struct fsm_walk2_tuple *dst;
 
@@ -499,7 +568,7 @@ fsm_walk2(const struct fsm *a, const struct fsm *b,
 		goto error;
 	}
 
-	data.states = set_create(cmp_walk2_tuple);
+	data.states = tuple_set_create();
 	if (data.states == NULL) {
 		goto error;
 	}

@@ -80,10 +80,10 @@ fsm_out_csv(const struct fsm *fsm, FILE *f)
 	bm_clear(&bm);
 
 	for (s = fsm->sl; s != NULL; s = s->next) {
-		struct set_iter it;
+		struct edge_iter it;
 		struct fsm_edge *e;
 
-		for (e = set_first(s->edges, &it); e != NULL; e = set_next(&it)) {
+		for (e = edge_set_first(s->edges, &it); e != NULL; e = edge_set_next(&it)) {
 			bm_set(&bm, e->symbol);
 		}
 	}
@@ -114,18 +114,18 @@ fsm_out_csv(const struct fsm *fsm, FILE *f)
 			fprintf(f, ", ");
 
 			search.symbol = n;
-			e = set_contains(s->edges, &search);
-			if (set_empty(e->sl)) {
+			e = edge_set_contains(s->edges, &search);
+			if (state_set_empty(e->sl)) {
 				fprintf(f, "\"\"");
 			} else {
 				struct fsm_state *se;
-				struct set_iter it;
+				struct state_iter it;
 
-				for (se = set_first(e->sl, &it); se != NULL; se = set_next(&it)) {
+				for (se = state_set_first(e->sl, &it); se != NULL; se = state_set_next(&it)) {
 					/* XXX: Used to always print set_first equivalent? */
 					fprintf(f, "S%u", indexof(fsm, se));
 
-					if (set_hasnext(&it)) {
+					if (state_set_hasnext(&it)) {
 						fprintf(f, " ");
 					}
 				}
