@@ -16,16 +16,16 @@ int cmp_int(const void *a_, const void *b_) {
 }
 
 int main(void) {
-	struct set *s = set_create(cmp_int);
-	struct set_iter iter;
+	struct set0 *s = set0_create(cmp_int);
+	struct set0_iter iter;
 	int *p;
 	int a[3] = {1, 2, 3};
 	int seen[3] = {0, 0, 0};
 	int i;
-	assert(set_add(&s, &a[0]));
-	assert(set_add(&s, &a[1]));
-	assert(set_add(&s, &a[2]));
-	for (p = set_first(s, &iter); p != NULL; p = set_next(&iter)) {
+	assert(set0_add(&s, &a[0]));
+	assert(set0_add(&s, &a[1]));
+	assert(set0_add(&s, &a[2]));
+	for (p = set0_first(s, &iter); p != NULL; p = set0_next(&iter)) {
 		assert(*p == 1 || *p == 2 || *p == 3);
 		seen[*p - 1] = 1;
 	}

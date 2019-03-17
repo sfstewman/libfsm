@@ -24,11 +24,11 @@ int *next_int(void) {
 }
 
 int main(void) {
-	struct set *s = set_create(cmp_int);
+	struct set0 *s = set0_create(cmp_int);
 	size_t i;
 	for (i = 0; i < 5000; i++) {
-		assert(set_add(&s, next_int()));
+		assert(set0_add(&s, next_int()));
 	}
-	assert(set_count(s) == 5000);
+	assert(set0_count(s) == 5000);
 	return 0;
 }

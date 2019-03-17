@@ -13,7 +13,7 @@
 
 #define SET_INITIAL 8
 
-struct set {
+struct set0 {
 	void **a;
 	size_t i;
 	size_t n;
@@ -24,7 +24,7 @@ struct set {
  * Return where an item would be, if it were inserted
  */
 static size_t
-set_search(const struct set *set, const void *item)
+set0_search(const struct set0 *set, const void *item)
 {
 	size_t start, end;
 	size_t mid;
@@ -53,16 +53,16 @@ set_search(const struct set *set, const void *item)
 }
 
 static int
-set_cmpval(const void *a, const void *b)
+set0_cmpval(const void *a, const void *b)
 {
 
 	return (a > b) - (a < b);
 }
 
-struct set *
-set_create(int (*cmp)(const void *a, const void *b))
+struct set0 *
+set0_create(int (*cmp)(const void *a, const void *b))
 {
-	struct set *s;
+	struct set0 *s;
 
 	assert(cmp != NULL);
 
@@ -84,9 +84,9 @@ set_create(int (*cmp)(const void *a, const void *b))
 }
 
 void *
-set_add(struct set **set, void *item)
+set0_add(struct set0 **set, void *item)
 {
-	struct set *s;
+	struct set0 *s;
 	size_t i;
 
 	assert(set != NULL);
@@ -100,13 +100,13 @@ set_add(struct set **set, void *item)
 	 * default comparison function and insert the new item at the front.
 	 */
 	if (s == NULL) {
-		s = set_create(set_cmpval);
+		s = set0_create(set0_cmpval);
 		s->a[0] = item;
 		s->i = 1;
 
 		*set = s;
 
-		assert(set_contains(*set, item));
+		assert(set0_contains(*set, item));
 
 		return item;
 	}
@@ -120,8 +120,8 @@ set_add(struct set **set, void *item)
 	 * was already there, than if we successfully inserted
 	 * a non-existing item.
 	 */
-	if (!set_empty(s)) {
-		i = set_search(s, item);
+	if (!set0_empty(s)) {
+		i = set0_search(s, item);
 		if (s->cmp(item, s->a[i]) == 0) {
 			return item;
 		}
@@ -153,25 +153,25 @@ set_add(struct set **set, void *item)
 		s->i = 1;
 	}
 
-	assert(set_contains(s, item));
+	assert(set0_contains(s, item));
 
 	return item;
 }
 
 void
-set_remove(struct set **set, void *item)
+set0_remove(struct set0 **set, void *item)
 {
-	struct set *s = *set;
+	struct set0 *s = *set;
 	size_t i;
 
 	assert(item != NULL);
 	assert(s->cmp != NULL);
 
-	if (set_empty(s)) {
+	if (set0_empty(s)) {
 		return;
 	}
 
-	i = set_search(s, item);
+	i = set0_search(s, item);
 	if (s->cmp(item, s->a[i]) == 0) {
 		if (i < s->i) {
 			memmove(&s->a[i], &s->a[i + 1], (s->i - i - 1) * (sizeof *s->a));
@@ -180,11 +180,11 @@ set_remove(struct set **set, void *item)
 		s->i--;
 	}
 
-	assert(!set_contains(s, item));
+	assert(!set0_contains(s, item));
 }
 
 void
-set_free(struct set *set)
+set0_free(struct set0 *set)
 {
 	if (set == NULL) {
 		return;
@@ -195,7 +195,7 @@ set_free(struct set *set)
 }
 
 size_t
-set_count(const struct set *set)
+set0_count(const struct set0 *set)
 {
 	if (set == NULL) {
 		return 0;
@@ -205,7 +205,7 @@ set_count(const struct set *set)
 }
 
 void
-set_clear(struct set *set)
+set0_clear(struct set0 *set)
 {
 	if (set == NULL) {
 		return;
@@ -215,18 +215,18 @@ set_clear(struct set *set)
 }
 
 void *
-set_contains(const struct set *set, const void *item)
+set0_contains(const struct set0 *set, const void *item)
 {
 	size_t i;
 
-	if (set_empty(set)) {
+	if (set0_empty(set)) {
 		return NULL;
 	}
 
 	assert(item != NULL);
 	assert(set->cmp != NULL);
 
-	i = set_search(set, item);
+	i = set0_search(set, item);
 	if (set->cmp(item, set->a[i]) == 0) {
 		return set->a[i];
 	}
@@ -235,7 +235,7 @@ set_contains(const struct set *set, const void *item)
 }
 
 int
-set_cmp(const struct set *a, const struct set *b)
+set0_cmp(const struct set0 *a, const struct set0 *b)
 {
 	if ((a == NULL) != (b == NULL)) {
 		return (a == NULL) - (b == NULL);
@@ -254,7 +254,7 @@ set_cmp(const struct set *a, const struct set *b)
 }
 
 int
-set_equal(const struct set *a, const struct set *b)
+set0_equal(const struct set0 *a, const struct set0 *b)
 {
 	if ((a == NULL) != (b == NULL)) {
 		return 0;
@@ -272,17 +272,17 @@ set_equal(const struct set *a, const struct set *b)
 }
 
 int
-set_empty(const struct set *set)
+set0_empty(const struct set0 *set)
 {
 	return set == NULL || set->i == 0;
 }
 
 void *
-set_first(const struct set *set, struct set_iter *it)
+set0_first(const struct set0 *set, struct set0_iter *it)
 {
 	assert(it != NULL);
 
-	if (set_empty(set)) {
+	if (set0_empty(set)) {
 		it->set = NULL;
 		return NULL;
 	}
@@ -294,21 +294,21 @@ set_first(const struct set *set, struct set_iter *it)
 }
 
 void *
-set_firstafter(const struct set *set, struct set_iter *it, void *item)
+set0_firstafter(const struct set0 *set, struct set0_iter *it, void *item)
 {
 	size_t i;
 	int r;
 
 	assert(it != NULL);
 
-	if (set_empty(set)) {
+	if (set0_empty(set)) {
 		it->set = NULL;
 		return NULL;
 	}
 
 	assert(set->cmp != NULL);
 
-	i = set_search(set, item);
+	i = set0_search(set, item);
 	r = set->cmp(item, set->a[i]);
 	assert(i <= set->i - 1);
 
@@ -327,7 +327,7 @@ set_firstafter(const struct set *set, struct set_iter *it, void *item)
 }
 
 void *
-set_next(struct set_iter *it)
+set0_next(struct set0_iter *it)
 {
 	assert(it != NULL);
 
@@ -340,7 +340,7 @@ set_next(struct set_iter *it)
 }
 
 void *
-set_only(const struct set *set)
+set0_only(const struct set0 *set)
 {
 	assert(set != NULL);
 	assert(set->n >= 1);
@@ -351,7 +351,7 @@ set_only(const struct set *set)
 }
 
 int
-set_hasnext(const struct set_iter *it)
+set0_hasnext(const struct set0_iter *it)
 {
 	assert(it != NULL);
 
@@ -359,7 +359,7 @@ set_hasnext(const struct set_iter *it)
 }
 
 const void **
-set_array(const struct set *set)
+set0_array(const struct set0 *set)
 {
 	if (set == NULL) {
 		return 0;

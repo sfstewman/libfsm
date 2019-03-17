@@ -24,16 +24,16 @@ int *next_int(void) {
 }
 
 int main(void) {
-	struct set *s = set_create(cmp_int);
+	struct set0 *s = set0_create(cmp_int);
 	int a[3] = {1200,2400,3600};
 	size_t i;
 	for (i = 0; i < 5000; i++) {
-		assert(set_add(&s, next_int()));
+		assert(set0_add(&s, next_int()));
 	}
 	for (i = 0; i < 3; i++) {
-		assert(set_contains(s, &a[i]));
-		set_remove(&s, &a[i]);
+		assert(set0_contains(s, &a[i]));
+		set0_remove(&s, &a[i]);
 	}
-	assert(set_count(s) == 4997);
+	assert(set0_count(s) == 4997);
 	return 0;
 }

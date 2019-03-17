@@ -7,72 +7,72 @@
 #ifndef SET_H
 #define SET_H
 
-struct set;
+struct set0;
 
-struct set_iter {
+struct set0_iter {
 	size_t i;
-	const struct set *set;
+	const struct set0 *set;
 };
 
-struct set *
-set_create(int (*cmp)(const void *a, const void *b));
+struct set0 *
+set0_create(int (*cmp)(const void *a, const void *b));
 
 void *
-set_add(struct set **set, void *item);
+set0_add(struct set0 **set0, void *item);
 
 void
-set_remove(struct set **set, void *item);
+set0_remove(struct set0 **set0, void *item);
 
 void
-set_free(struct set *set);
+set0_free(struct set0 *set0);
 
 size_t
-set_count(const struct set *set);
+set0_count(const struct set0 *set0);
 
 void
-set_clear(struct set *set);
+set0_clear(struct set0 *set);
 
 /*
  * Find if an item is in a set, and return it.
  */
 void *
-set_contains(const struct set *set, const void *item);
+set0_contains(const struct set0 *set, const void *item);
 
 /*
  * Compare two sets like memcmp
  */
 int
-set_cmp(const struct set *a, const struct set *b);
+set0_cmp(const struct set0 *a, const struct set0 *b);
 
 /*
  * Compare two sets for equality.
  */
 int
-set_equal(const struct set *a, const struct set *b);
+set0_equal(const struct set0 *a, const struct set0 *b);
 
 int
-set_empty(const struct set *set);
+set0_empty(const struct set0 *set);
 
 void *
-set_first(const struct set *set, struct set_iter *it);
+set0_first(const struct set0 *set, struct set0_iter *it);
 
 void *
-set_firstafter(const struct set *set, struct set_iter *it, void *item);
+set0_firstafter(const struct set0 *set, struct set0_iter *it, void *item);
 
 void *
-set_next(struct set_iter *it);
+set0_next(struct set0_iter *it);
 
 /*
  * Return the sole item for a singleton set.
  */
 void *
-set_only(const struct set *set);
+set0_only(const struct set0 *set);
 
 int
-set_hasnext(const struct set_iter *it);
+set0_hasnext(const struct set0_iter *it);
 
 const void **
-set_array(const struct set *set);
+set0_array(const struct set0 *set);
 
 #endif
 
