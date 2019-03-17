@@ -53,7 +53,7 @@ int main(void) {
 	for (i = 0, p = sortedset_first(s, &iter); i < 5000; i++, sortedset_next(&iter)) {
 		assert(p);
 		int nxt = sortedset_hasnext(&iter);
-		fprintf(stderr, "[%5zu] %p %d\n", i,(void *)p,nxt);
+		// fprintf(stderr, "[%5zu] %p %d\n", i,(void *)p,nxt);
 		if (i < 4999) {
 			assert(nxt);
 		} else {
