@@ -163,10 +163,10 @@ state_set_hasnext(struct state_iter *it)
 	return set0_hasnext(&it->iter);
 }
 
-const struct fsm_state *
+const struct fsm_state **
 state_set_array(const struct state_set *set)
 {
-	return (const struct fsm_state *)set0_array(set->set);
+	return (const struct fsm_state **)set0_array(set->set);
 }
 
 int

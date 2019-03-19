@@ -123,7 +123,7 @@ state_set_hasnext(struct state_iter *it);
 int
 state_set_cmp(const struct state_set *a, const struct state_set *b);
 
-const struct fsm_state *
+const struct fsm_state **
 state_set_array(const struct state_set *set);
 
 struct fsm_edge {
