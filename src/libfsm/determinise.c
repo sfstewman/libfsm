@@ -167,12 +167,288 @@ addtomappings(struct mapping_set *mappings, struct fsm *dfa, struct state_set *c
 	return m;
 }
 
+struct epsilon_state {
+	/* original state */
+	struct fsm_state *st;
+
+	/* counter for identifying whether state is in the current closure */
+	unsigned int closure_id;
+
+	/* first edge */
+	unsigned int edge0;
+};
+
+struct epsilon_edge {
+	unsigned int src;
+	unsigned int dst;
+};
+
+struct epsilon_table {
+	size_t nstates;
+
+	struct epsilon_state *states;
+	struct epsilon_edge *edges;
+	struct hashset rev_map;
+
+	unsigned int last_closure_id;
+};
+
+/* maps struct fsm_state * to index to struct epsilon_state * */
+struct epsilon_map_entry {
+	struct fsm_state *st;
+	struct epsilon_state *est;
+};
+
+static int epsilon_state_compare(const void *a, const void *b)
+{
+	const struct epsilon_state *ea = a, *eb = b;
+	return (ea->st > eb->st) - (ea->st < eb->st);
+}
+
+static unsigned long epsilon_state_hash(const void *a)
+{
+	const struct epsilon_state *ent = a;
+	return hashrec(ent->st, sizeof *(ent->st));
+}
+
+static struct epsilon_state *epsilon_table_lookup(struct epsilon_table *tbl, const struct fsm_state *st)
+{
+	(void)tbl;
+
+	return st->tmp.eps;
+
+	/*
+	const static struct epsilon_state zero;
+	st->equiv = (struct fsm_state *)&tbl->states[state_ind];
+
+	struct epsilon_state tmp = zero;
+	tmp.st = st;
+	return hashset_contains(&tbl->rev_map, &tmp);
+	*/
+}
+
+static int epsilon_table_initialize(struct epsilon_table *tbl, const struct fsm *fsm)
+{
+	static const struct epsilon_table init;
+	size_t nstates, nedges;
+	struct fsm_state *st;
+	size_t revmap_nbuckets;
+	size_t state_ind, edge_ind;
+
+	*tbl = init;
+
+	/* count states */
+	nstates = nedges = 0;
+	for (st = fsm->sl; st != NULL; st = st->next) {
+		const struct fsm_edge *e;
+
+		nstates++;
+
+		e = fsm_hasedge(st, FSM_EDGE_EPSILON);
+		if (e != NULL) {
+			nedges += state_set_count(e->sl);
+		}
+	}
+
+	/* fprintf(stderr, "\n--[ nstates = %zu, nedges = %zu ]--\n\n", nstates,nedges); */
+
+	/* initialize reverse map */
+	revmap_nbuckets = nstates * (int)(1+1.0/DEFAULT_LOAD);
+	if (!hashset_initialize(&tbl->rev_map, revmap_nbuckets, DEFAULT_LOAD, epsilon_state_hash, epsilon_state_compare)) {
+		return 0;
+	}
+
+	/* allocate state and edge arrays */
+	tbl->states = f_malloc(fsm, (nstates+1) * sizeof *tbl->states);
+	if (tbl->states == NULL) {
+		goto error;
+	}
+
+	if (nedges > 0) {
+		tbl->edges = f_malloc(fsm, nedges * sizeof *tbl->edges);
+		if (tbl->edges == NULL) {
+			goto error;
+		}
+	}
+
+	/* iterate through states, filling in the state array and the index
+	 * lookup
+	 */
+	state_ind = 0;
+	for (st = fsm->sl; st != NULL; st = st->next) {
+		tbl->states[state_ind].st = st;
+		tbl->states[state_ind].closure_id = 0;
+		tbl->states[state_ind].edge0 = 0;
+
+		if (hashset_add(&tbl->rev_map, &tbl->states[state_ind]) == NULL) {
+			goto error;
+		}
+
+		/* hijack equiv field to speed things up... */
+		st->tmp.eps = &tbl->states[state_ind];
+
+		state_ind++;
+	}
+
+	/* next iterate through edges, filling in edge table and
+	 * updating the edge0 entries in the state table
+	 */
+	edge_ind  = 0;
+	for (state_ind = 0; state_ind < nstates; state_ind++) {
+		const struct fsm_state *st0;
+		const struct fsm_state *st1;
+		const struct fsm_edge *e;
+		struct state_iter it;
+
+		st0 = tbl->states[state_ind].st;
+		tbl->states[state_ind].edge0 = edge_ind;
+
+		e = fsm_hasedge(st0, FSM_EDGE_EPSILON);
+		if (e == NULL) {
+			continue;
+		}
+
+		for (st1 = state_set_first(e->sl, &it); st1 != NULL; st1 = state_set_next(&it)) {
+			struct epsilon_state *est;
+
+			assert(edge_ind < nedges);
+
+			est = epsilon_table_lookup(tbl, st1);
+			assert(est != NULL);
+
+			if (est == NULL) {
+				/* something went wrong */
+				/* XXX - provide better feedback? */
+				goto error;
+			}
+
+			tbl->edges[edge_ind].src = state_ind;
+			tbl->edges[edge_ind].dst = est - &tbl->states[0];
+
+			edge_ind++;
+		}
+	}
+
+	assert(edge_ind == nedges);
+
+	/* last extra state holds the edge count */
+	tbl->states[nstates].st = NULL;
+	tbl->states[nstates].closure_id = 0;
+	tbl->states[nstates].edge0 = edge_ind;
+
+	tbl->nstates = nstates;
+
+	return 1;
+
+error:
+	hashset_finalize(&tbl->rev_map);
+	f_free(fsm, tbl->states);
+	f_free(fsm, tbl->edges);
+
+	return 0;
+}
+
+static void epsilon_table_finalize(const struct fsm *fsm, struct epsilon_table *tbl)
+{
+	hashset_finalize(&tbl->rev_map);
+
+	f_free(fsm, tbl->states);
+	f_free(fsm, tbl->edges);
+
+	tbl->states = NULL;
+	tbl->edges  = NULL;
+}
+
+static struct state_array *
+epsilon_closure_tbl(struct epsilon_table *tbl, size_t s0, unsigned int closure_id, struct state_array *states)
+{
+	unsigned int ei,e0,e1;
+
+	assert(s0 < tbl->nstates);
+	assert(closure_id > 0);
+
+	if (tbl->states[s0].closure_id == closure_id) {
+		return states;
+	}
+
+	if (state_array_add(states, tbl->states[s0].st) == NULL) {
+		return NULL;
+	}
+
+	tbl->states[s0].closure_id = closure_id;
+
+	e0 = tbl->states[s0].edge0;
+	e1 = tbl->states[s0+1].edge0;
+
+	for (ei = e0; ei < e1; ei++) {
+		assert(tbl->edges[ei].src == s0);
+		if (epsilon_closure_tbl(tbl, tbl->edges[ei].dst, closure_id, states) == NULL) {
+			return NULL;
+		}
+	}
+
+	return states;
+}
+
+static struct state_set *
+epsilon_closure_usetbl(const struct fsm *fsm, struct epsilon_table *tbl, const struct fsm_state *state)
+{
+	const static struct state_array arr_init;
+	struct state_array arr = arr_init;
+	struct epsilon_state *est;
+	unsigned int closure_id;
+
+	est = epsilon_table_lookup(tbl, state);
+	if (est == NULL) {
+		return NULL;
+	}
+
+	closure_id = ++tbl->last_closure_id;
+	if (epsilon_closure_tbl(tbl,est - &tbl->states[0],closure_id,&arr) == NULL) {
+		f_free(fsm, arr.states);
+		return NULL;
+	}
+
+	/* convert states to set */
+	return state_set_create_from_array((struct fsm_state **)arr.states, arr.len);
+}
+
+static struct state_set *
+epsilon_closure_states(const struct fsm *fsm, struct epsilon_table *tbl, struct state_set *states)
+{
+	const static struct state_array arr_init;
+	struct state_array arr = arr_init;
+	struct epsilon_state *est;
+	unsigned int closure_id;
+	struct state_iter it;
+	struct fsm_state *s;
+
+	closure_id = ++tbl->last_closure_id;
+	for (s = state_set_first(states,&it); s != NULL; s = state_set_next(&it)) {
+		est = epsilon_table_lookup(tbl, s);
+		if (est == NULL) {
+			goto error;
+		}
+
+		if (epsilon_closure_tbl(tbl,est - &tbl->states[0],closure_id,&arr) == NULL) {
+			goto error;
+		}
+	}
+
+	/* convert states to set */
+	return state_set_create_from_array((struct fsm_state **)arr.states, arr.len);
+
+error:
+	f_free(fsm, arr.states);
+	return NULL;
+}
+
 /*
  * Return the DFA state associated with the closure of a given NFA state.
  * Create the DFA state if neccessary.
  */
 static struct fsm_state *
-state_closure(struct mapping_set *mappings, struct fsm *dfa, const struct fsm_state *nfastate,
+state_closure(const struct fsm *nfa, struct epsilon_table *tbl, struct mapping_set *mappings, struct fsm *dfa, const struct fsm_state *nfastate,
 	int includeself)
 {
 	struct mapping *m;
@@ -182,15 +458,22 @@ state_closure(struct mapping_set *mappings, struct fsm *dfa, const struct fsm_st
 	assert(nfastate != NULL);
 	assert(mappings != NULL);
 
+	ec = epsilon_closure_usetbl(nfa, tbl, nfastate);
+	if (ec == NULL) {
+		return NULL;
+	}
+
+	/*
 	ec = state_set_create();
 	if (ec == NULL) {
 		return NULL;
 	}
 
-	if (epsilon_closure(nfastate, ec) == NULL) {
+	if (epsilon_closure0(nfastate, ec) == NULL) {
 		state_set_free(ec);
 		return NULL;
 	}
+	*/
 
 	if (!includeself) {
 		state_set_remove(ec, (void *) nfastate);
@@ -214,27 +497,32 @@ state_closure(struct mapping_set *mappings, struct fsm *dfa, const struct fsm_st
  * states. Create the DFA state if neccessary.
  */
 static struct fsm_state *
-set_closure(struct mapping_set *mappings, struct fsm *dfa, struct state_set *set)
+set_closure(const struct fsm *nfa, struct epsilon_table *tbl, struct mapping_set *mappings, struct fsm *dfa, struct state_set *set)
 {
-	struct state_iter it;
 	struct state_set *ec;
 	struct mapping *m;
-	struct fsm_state *s;
 
 	assert(set != NULL);
 	assert(mappings != NULL);
 
+	ec = epsilon_closure_states(nfa, tbl, set);
+	if (ec == NULL) {
+		return NULL;
+	}
+
+	/*
 	ec = state_set_create();
 	if (ec == NULL) {
 		return NULL;
 	}
 
 	for (s = state_set_first(set, &it); s != NULL; s = state_set_next(&it)) {
-		if (epsilon_closure(s, ec) == NULL) {
+		if (epsilon_closure0(s, ec) == NULL) {
 			state_set_free(ec);
 			return NULL;
 		}
 	}
+	*/
 
 	m = addtomappings(mappings, dfa, ec);
 	/* TODO: test ec */
@@ -412,6 +700,9 @@ determinise(struct fsm *nfa,
 	struct fsm_determinise_cache *dcache)
 {
 	static const struct mapping_iter_save sv_init;
+	static const struct epsilon_table epstbl_init;
+
+	struct epsilon_table epstbl = epstbl_init;
 
 	struct mapping *curr;
 	struct mapping_set *mappings;
@@ -464,6 +755,10 @@ determinise(struct fsm *nfa,
 	trans = dcache->trans;
 	assert(trans != NULL);
 
+	if (!epsilon_table_initialize(&epstbl,nfa)) {
+		goto error;
+	}
+
 	/*
 	 * The epsilon closure of the NFA's start state is the DFA's start state.
 	 * This is not yet "done"; it starts off the loop below.
@@ -496,7 +791,7 @@ determinise(struct fsm *nfa,
 			includeself = 0;
 		}
 
-		dfastart = state_closure(mappings, dfa, nfastart, includeself);
+		dfastart = state_closure(nfa, &epstbl, mappings, dfa, nfastart, includeself);
 		if (dfastart == NULL) {
 			/* TODO: error */
 			goto error;
@@ -548,7 +843,7 @@ determinise(struct fsm *nfa,
 				goto error;
 			}
 
-			new = set_closure(mappings, dfa, reachable);
+			new = set_closure(nfa, &epstbl, mappings, dfa, reachable);
 			state_set_free(reachable);
 			if (new == NULL) {
 				clear_trans(dfa, trans);
@@ -597,7 +892,7 @@ determinise(struct fsm *nfa,
 	return dfa;
 
 error:
-
+	epsilon_table_finalize(nfa,&epstbl);
 	clear_mappings(dfa, mappings);
 	fsm_free(dfa);
 

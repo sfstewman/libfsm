@@ -54,6 +54,8 @@ struct fsm_edge {
 	enum fsm_edge_type symbol;
 };
 
+struct epsilon_state;
+
 struct fsm_state {
 	unsigned int end:1;
 	unsigned int reachable:1;
@@ -69,6 +71,9 @@ struct fsm_state {
 		struct fsm_state *equiv;
 		/* tracks which states have been visited in walk2 */
 		struct fsm_state *visited;
+
+		/* used by scc epsilon closure algorithm */
+		struct epsilon_state *eps;
 	} tmp;
 
 #ifdef DEBUG_TODFA
