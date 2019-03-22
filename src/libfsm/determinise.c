@@ -23,6 +23,17 @@
 
 #include "internal.h"
 
+/* hash function for a set of sorted states */
+static unsigned long
+hash_states(const struct state_set *s)
+{
+	const struct fsm_state **states = state_set_array(s);
+	size_t nstates = state_set_count(s);
+
+	return hashrec(states, nstates * sizeof states[0]);
+}
+
+
 /*
  * A set of states in an NFA.
  *
@@ -118,10 +129,7 @@ static unsigned long
 hash_mapping(const void *a)
 {
 	const struct mapping *m = a;
-	const struct fsm_state **states = state_set_array(m->closure);
-	size_t nstates = state_set_count(m->closure);
-
-	return hashrec(states, nstates * sizeof states[0]);
+	return hash_states(m->closure);
 }
 
 /*
@@ -183,12 +191,18 @@ struct epsilon_edge {
 	unsigned int dst;
 };
 
+struct epsilon_memo {
+	struct state_set *in_set;
+	struct state_set *closure;
+};
+
 struct epsilon_table {
 	size_t nstates;
 
 	struct epsilon_state *states;
 	struct epsilon_edge *edges;
 	struct hashset rev_map;
+	struct hashset memoize;
 
 	unsigned int last_closure_id;
 };
@@ -211,7 +225,20 @@ static unsigned long epsilon_state_hash(const void *a)
 	return hashrec(ent->st, sizeof *(ent->st));
 }
 
-static struct epsilon_state *epsilon_table_lookup(struct epsilon_table *tbl, const struct fsm_state *st)
+static int epsilon_memo_cmp(const void *a, const void *b)
+{
+	const struct epsilon_memo *ma = a, *mb = b;
+	return state_set_cmp(ma->in_set, mb->in_set);
+}
+
+static unsigned long epsilon_memo_hash(const void *a)
+{
+	const struct epsilon_memo *ma = a;
+	return hash_states(ma->in_set);
+}
+
+static struct epsilon_state *
+epsilon_table_lookup(struct epsilon_table *tbl, const struct fsm_state *st)
 {
 	(void)tbl;
 
@@ -225,6 +252,73 @@ static struct epsilon_state *epsilon_table_lookup(struct epsilon_table *tbl, con
 	tmp.st = st;
 	return hashset_contains(&tbl->rev_map, &tmp);
 	*/
+}
+
+static struct state_set *
+epsilon_memo_lookup(struct epsilon_table *tbl, struct state_set *s)
+{
+	struct epsilon_memo memo, *lkup;
+	memo.in_set = s;
+
+	lkup = hashset_contains(&tbl->memoize, &memo);
+	if (lkup == NULL) {
+		return NULL;
+	}
+
+	return lkup->closure;
+}
+
+static void
+epsilon_memo_free(struct epsilon_memo *memo)
+{
+	if (memo == NULL) {
+		return;
+	}
+
+	if (memo->in_set != NULL) {
+		state_set_free(memo->in_set);
+	}
+
+	if (memo->closure != NULL) {
+		state_set_free(memo->closure);
+	}
+
+	free(memo);
+}
+
+static struct epsilon_memo *
+epsilon_memo_remember(struct epsilon_table *tbl, struct state_set *s, struct state_set *closure)
+{
+	static const struct epsilon_memo zero;
+
+	struct epsilon_memo *memo;
+
+	memo = malloc(sizeof *memo);
+	if (memo == NULL) {
+		goto error;
+	}
+
+	*memo = zero;
+
+	memo->in_set = state_set_copy(s);
+	if (memo->in_set == NULL) {
+		goto error;
+	}
+
+	memo->closure = state_set_copy(closure);
+	if (memo->closure == NULL) {
+		goto error;
+	}
+
+	if (hashset_add(&tbl->memoize, memo) == NULL) {
+		goto error;
+	}
+
+	return memo;
+
+error:
+	epsilon_memo_free(memo);
+	return NULL;
 }
 
 static int epsilon_table_initialize(struct epsilon_table *tbl, const struct fsm *fsm)
@@ -255,7 +349,11 @@ static int epsilon_table_initialize(struct epsilon_table *tbl, const struct fsm 
 	/* initialize reverse map */
 	revmap_nbuckets = nstates * (int)(1+1.0/DEFAULT_LOAD);
 	if (!hashset_initialize(&tbl->rev_map, revmap_nbuckets, DEFAULT_LOAD, epsilon_state_hash, epsilon_state_compare)) {
-		return 0;
+		goto error;
+	}
+
+	if (!hashset_initialize(&tbl->memoize, DEFAULT_NBUCKETS, DEFAULT_LOAD, epsilon_memo_hash, epsilon_memo_cmp)) {
+		goto error;
 	}
 
 	/* allocate state and edge arrays */
@@ -342,6 +440,7 @@ static int epsilon_table_initialize(struct epsilon_table *tbl, const struct fsm 
 
 error:
 	hashset_finalize(&tbl->rev_map);
+	hashset_finalize(&tbl->memoize);
 	f_free(fsm, tbl->states);
 	f_free(fsm, tbl->edges);
 
@@ -350,7 +449,21 @@ error:
 
 static void epsilon_table_finalize(const struct fsm *fsm, struct epsilon_table *tbl)
 {
+	if (tbl == NULL) {
+		return;
+	}
+
 	hashset_finalize(&tbl->rev_map);
+
+	if (tbl->memoize.buckets != NULL) {
+		struct hashset_iter it;
+		struct epsilon_memo *m;
+		for (m = hashset_first(&tbl->memoize,&it); m != NULL; m = hashset_next(&it)) {
+			epsilon_memo_free(m);
+		}
+	}
+
+	hashset_finalize(&tbl->memoize);
 
 	f_free(fsm, tbl->states);
 	f_free(fsm, tbl->edges);
@@ -410,6 +523,7 @@ epsilon_closure_usetbl(const struct fsm *fsm, struct epsilon_table *tbl, const s
 	}
 
 	/* convert states to set */
+	/* fprintf(stderr, "%s: %zd, %u\n", __func__, est-&tbl->states[0],closure_id); */
 	return state_set_create_from_array((struct fsm_state **)arr.states, arr.len);
 }
 
@@ -424,16 +538,19 @@ epsilon_closure_states(const struct fsm *fsm, struct epsilon_table *tbl, struct 
 	struct fsm_state *s;
 
 	closure_id = ++tbl->last_closure_id;
+	/* fprintf(stderr, "%s: --[ %lu states, closure_id = %u ]--\n", __func__, (unsigned long)state_set_count(states), closure_id); */
 	for (s = state_set_first(states,&it); s != NULL; s = state_set_next(&it)) {
 		est = epsilon_table_lookup(tbl, s);
 		if (est == NULL) {
 			goto error;
 		}
 
+		/* fprintf(stderr, "%s: %zd, %u\n", __func__, est-&tbl->states[0],closure_id); */
 		if (epsilon_closure_tbl(tbl,est - &tbl->states[0],closure_id,&arr) == NULL) {
 			goto error;
 		}
 	}
+	/* fprintf(stderr, "%s: ---\n", __func__); */
 
 	/* convert states to set */
 	return state_set_create_from_array((struct fsm_state **)arr.states, arr.len);
@@ -462,18 +579,6 @@ state_closure(const struct fsm *nfa, struct epsilon_table *tbl, struct mapping_s
 	if (ec == NULL) {
 		return NULL;
 	}
-
-	/*
-	ec = state_set_create();
-	if (ec == NULL) {
-		return NULL;
-	}
-
-	if (epsilon_closure0(nfastate, ec) == NULL) {
-		state_set_free(ec);
-		return NULL;
-	}
-	*/
 
 	if (!includeself) {
 		state_set_remove(ec, (void *) nfastate);
@@ -505,27 +610,26 @@ set_closure(const struct fsm *nfa, struct epsilon_table *tbl, struct mapping_set
 	assert(set != NULL);
 	assert(mappings != NULL);
 
-	ec = epsilon_closure_states(nfa, tbl, set);
-	if (ec == NULL) {
-		return NULL;
-	}
-
-	/*
-	ec = state_set_create();
-	if (ec == NULL) {
-		return NULL;
-	}
-
-	for (s = state_set_first(set, &it); s != NULL; s = state_set_next(&it)) {
-		if (epsilon_closure0(s, ec) == NULL) {
-			state_set_free(ec);
+	ec = epsilon_memo_lookup(tbl, set);
+	if (ec != NULL) {
+		ec = state_set_copy(ec);
+		if (ec == NULL) {
 			return NULL;
 		}
+	} else {
+		ec = epsilon_closure_states(nfa, tbl, set);
+		if (ec == NULL) {
+			return NULL;
+		}
+
+		epsilon_memo_remember(tbl, set, ec);
 	}
-	*/
 
 	m = addtomappings(mappings, dfa, ec);
-	/* TODO: test ec */
+	if (m == NULL) {
+		/* XXX - cleanup? */
+		return NULL;
+	}
 
 	return m->dfastate;
 }
