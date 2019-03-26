@@ -81,6 +81,8 @@ struct fsm_state {
 #endif
 
 	struct fsm_state *next;
+
+	unsigned int eps_scc;
 };
 
 struct fsm {

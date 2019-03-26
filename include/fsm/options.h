@@ -60,6 +60,9 @@ struct fsm_options {
 	 */
 	unsigned int always_hex:1;
 
+	/* use strongly-connected components names instead of state names */
+	unsigned int scc_names:1;
+
 	/* for generated code, what kind of I/O API to generate */
 	enum fsm_io io;
 

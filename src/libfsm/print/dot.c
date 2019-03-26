@@ -84,7 +84,11 @@ singlestate(FILE *f, const struct fsm *fsm, struct fsm_state *s)
 			fsm->opt->prefix != NULL ? fsm->opt->prefix : "",
 			indexof(fsm, s));
 
-		fprintf(f, "%u", indexof(fsm, s));
+		if (fsm->opt->scc_names) {
+			fprintf(f, "%u", s->eps_scc);
+		} else {
+			fprintf(f, "%u", indexof(fsm, s));
+		}
 
 #ifdef DEBUG_TODFA
 		if (s->nfasl != NULL) {

@@ -472,6 +472,262 @@ static void epsilon_table_finalize(const struct fsm *fsm, struct epsilon_table *
 	tbl->edges  = NULL;
 }
 
+/* data for Tarjan's strongly connected components alg */
+struct scc_data {
+	unsigned int *stack;
+	unsigned int *indexes;
+	unsigned int *lowest;
+	unsigned int *labels;
+	unsigned char *on_stack;
+
+	unsigned int top; /* holds stack top */
+	unsigned int lbl; /* holds current scc label */
+	unsigned int idx; /* holds current index */
+};
+
+static void scc_dfs(struct epsilon_table *tbl, struct scc_data *data, unsigned int st)
+{
+	unsigned int e0,e1, e, lbl;
+
+	/* invariants:
+	 * 1. beginning this search, nodes must have been visited (index == 0)
+	 * 2. nodes should not be on the node stack (should follow from 1)
+	 */
+	assert(data->indexes[st] == 0);
+	assert(data->on_stack[st] == 0);
+
+	if (data->labels[st] != 0) {
+		/* already part of an SCC */
+		fprintf(stderr, "--> state %u already labeled: %u\n", st, data->labels[st]);
+		return;
+	}
+
+	data->stack[data->top++] = st; /* data->indexes[st]; */
+
+	data->indexes[st] = ++data->idx;
+	assert(data->idx > 0);
+
+	data->lowest[st] = data->indexes[st];
+	data->on_stack[st] = 1;
+
+	fprintf(stderr, "--push--\n[%4u] %u [ind=%u : lo=%u : stk=%d]\n", data->top, st, data->indexes[st], data->lowest[st], data->on_stack[st]);
+	fprintf(stderr, "--stack--\n");
+	{
+		unsigned int i;
+		for(i=data->top; i > 0; i--) {
+			unsigned int st1 = data->stack[i-1];
+			fprintf(stderr, "[%4u] %u [ind=%u : lo=%u : stk=%d]\n", i, st1, data->indexes[st1], data->lowest[st1], data->on_stack[st1]);
+		}
+	}
+
+	e0 = tbl->states[st].edge0;
+	e1 = tbl->states[st+1].edge0;
+	for (e=e0; e < e1; e++) {
+		unsigned int st1;
+
+		assert(tbl->edges[e].src == st);
+
+		st1 = tbl->edges[e].dst;
+
+		if (data->indexes[st1] == 0) {
+			scc_dfs(tbl, data, st1);
+			if (data->lowest[st] > data->lowest[st1]) {
+				data->lowest[st] = data->lowest[st1];
+			}
+		} else if (data->on_stack[st1] && data->lowest[st] > data->indexes[st1]) {
+			data->lowest[st] = data->lowest[st1];
+		}
+	}
+
+	if (data->indexes[st] != data->lowest[st]) {
+		/* not the root of a strongly connected component */
+		assert(data->lowest[st] < data->indexes[st]);
+		return;
+	}
+
+	/* the root of a strongly connected component */
+	lbl = ++data->lbl;
+	assert(lbl > 0);
+	fprintf(stderr, "--scc %u--\n", lbl);
+	for (;;) {
+		unsigned int st1;
+
+		assert(data->top > 0);
+		st1 = data->stack[--data->top];
+
+		fprintf(stderr, "[%4u] lbl=%4u st0=%u[ind=%u : lo=%u : stk=%d] st1=%u[ind=%u : lo=%u : stk=%d]\n",
+			data->top+1, lbl,
+			st,  data->indexes[st],  data->lowest[st],  data->on_stack[st],
+			st1, data->indexes[st1], data->lowest[st1], data->on_stack[st1]);
+
+		assert(data->on_stack[st1] != 0);
+		data->on_stack[st1] = 0;
+
+		assert(data->labels[st1] == 0);
+		data->labels[st1] = lbl;
+
+		if (st == st1) {
+			break;
+		}
+	}
+}
+
+static int find_strongly_connected_components(struct epsilon_table *tbl, unsigned int **scc_states, unsigned int **scc_offsets)
+{
+	static const struct scc_data zero;
+	struct scc_data data;
+	char *block;
+	size_t sz;
+	unsigned i, minindexed = 0;
+	int ret = -1;
+
+	/* allocate one block, all at once */
+	sz  = 4*tbl->nstates * sizeof data.stack[0]; /* stack, indexes, lowest, labels */
+	sz += tbl->nstates * sizeof data.on_stack[0];
+
+	block = malloc(sz);
+	if (block == NULL) {
+		goto finish;
+	}
+
+	data = zero;
+
+	data.stack    = malloc(tbl->nstates * sizeof data.stack[0]);
+	data.indexes  = malloc(tbl->nstates * sizeof data.indexes[0]);
+	data.lowest   = malloc(tbl->nstates * sizeof data.lowest[0]);
+	data.labels   = malloc(tbl->nstates * sizeof data.labels[0]);
+	data.on_stack = malloc(tbl->nstates * sizeof data.on_stack[0]);
+
+	if (data.stack == NULL || data.indexes == NULL || data.lowest == NULL || data.labels == NULL || data.on_stack == NULL) {
+		goto finish;
+	}
+
+	for (i=0; i < tbl->nstates; i++) {
+		data.stack[i]    = 0;
+		data.indexes[i]  = 0;
+		data.lowest[i]   = 0;
+		data.labels[i]   = 0;
+		data.on_stack[i] = 0;
+	}
+
+	for (;;) {
+		unsigned int st;
+
+		/* scan for states that have not been labeled as part of a connected component... */
+		for (st=minindexed; st < tbl->nstates; st++) {
+			if (data.indexes[st] > 0) {
+				continue;
+			}
+
+			if (tbl->states[st].edge0 == tbl->states[st+1].edge0) {
+				/* no epsilon edges, no need for a DFS */
+				data.indexes[st] = ++data.idx;
+				data.labels[st]  = ++data.lbl;
+				continue;
+			}
+
+			/* found a label==0 where there are epsilon edges */
+			break;
+		}
+
+		/* stop when we can't find any more unlabeled states */
+		if (st == tbl->nstates) {
+			break;
+		}
+
+		minindexed = st; /* don't repeatedly search through things already given an index... */
+
+		fprintf(stderr, "=== search starting at %u ===\n", st);
+		scc_dfs(tbl, &data, st);
+
+		/* state should be labeled after scc_dfs */
+		assert(data.labels[st] > 0);
+	}
+
+	/* set the labels on the fsm_state nodes */
+	{ 
+		unsigned int st;
+		for (st=0; st < tbl->nstates; st++) {
+			struct fsm_state *s = tbl->states[st].st;
+			s->eps_scc = data.labels[st];
+		}
+	}
+
+	/* Build a list of states associated with each SCC so we can generate
+	 * the epsilon closure for each SCC in reverse-topological order.
+	 *
+	 * Need to return:
+	 * 1) list of states ordered by scc
+	 * 2) offsets into the list for each scc
+	 *
+	 * To avoid unnecessary allocations, reuse the stack, indexes, and
+	 * lowest arrays.
+	 */
+	{
+		unsigned int *max_off, *scc_list, *lbl_inds;
+		unsigned int i, maxlbl;
+
+		max_off  = data.stack;   data.stack   = NULL;  /* we want to retain max_off and scc_list */
+		scc_list = data.indexes; data.indexes = NULL;
+		lbl_inds = data.lowest;  /* temporary counters, no need to retain */
+
+		maxlbl = data.lbl;
+
+		for (i=0; i < tbl->nstates; i++) {
+			max_off[i] = scc_list[i] = lbl_inds[i] = 0;
+		}
+
+		/* count number of states per label */
+		for (i=0; i < tbl->nstates; i++) {
+			unsigned int lbl = data.labels[i];
+			assert(lbl > 0 && lbl <= maxlbl);
+
+			max_off[lbl-1]++;
+		}
+
+		/* convert max_off to cumulative sum */
+		for (i=1; i < maxlbl; i++) {
+			max_off[i] += max_off[i-1];
+			lbl_inds[i] = max_off[i-1]; /* first offset of lbl[i] starts at max_off[i-1] */
+		}
+
+		/* build lists of states */
+		for (i=0; i < tbl->nstates; i++) {
+			unsigned int lbl = data.labels[i];
+			unsigned int off;
+
+			assert(lbl > 0 && lbl <= maxlbl);
+
+			off = lbl_inds[lbl-1]++;
+			assert(off < max_off[lbl-1]);
+			scc_list[off] = i;
+		}
+
+		if (scc_states) {
+			*scc_states = scc_list;
+		} else {
+			free(scc_list);
+		}
+
+		if (scc_offsets) {
+			*scc_offsets = max_off;
+		} else {
+			free(max_off);
+		}
+	}
+
+	ret = 0;
+
+finish:
+	free(data.stack);
+	free(data.indexes);
+	free(data.lowest);
+	free(data.labels);
+	free(data.on_stack);
+
+	return ret;
+}
+
 static struct state_array *
 epsilon_closure_tbl(struct epsilon_table *tbl, size_t s0, unsigned int closure_id, struct state_array *states)
 {
@@ -558,6 +814,23 @@ epsilon_closure_states(const struct fsm *fsm, struct epsilon_table *tbl, struct 
 error:
 	f_free(fsm, arr.states);
 	return NULL;
+}
+
+int fsm_label_epsilon_scc(struct fsm *fsm)
+{
+	const static struct epsilon_table epstbl_init;
+	struct epsilon_table epstbl = epstbl_init;
+	int ret = -1;
+
+	if (!epsilon_table_initialize(&epstbl,fsm)) {
+		goto finish;
+	}
+
+	ret = find_strongly_connected_components(&epstbl, NULL, NULL);
+
+finish:
+	epsilon_table_finalize(fsm,&epstbl);
+	return ret;
 }
 
 /*
