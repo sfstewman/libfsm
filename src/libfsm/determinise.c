@@ -204,6 +204,8 @@ struct epsilon_table {
 	struct hashset rev_map;
 	struct hashset memoize;
 
+	struct state_set **eps_closures;
+
 	unsigned int last_closure_id;
 };
 
@@ -362,12 +364,19 @@ static int epsilon_table_initialize(struct epsilon_table *tbl, const struct fsm 
 		goto error;
 	}
 
+	tbl->eps_closures = f_malloc(fsm, nstates * sizeof *tbl->states);
+	if (tbl->eps_closures == NULL) {
+		goto error;
+	}
+
 	if (nedges > 0) {
 		tbl->edges = f_malloc(fsm, nedges * sizeof *tbl->edges);
 		if (tbl->edges == NULL) {
 			goto error;
 		}
 	}
+
+	memset(tbl->eps_closures, 0, nstates * sizeof *tbl->eps_closures);
 
 	/* iterate through states, filling in the state array and the index
 	 * lookup
@@ -443,6 +452,7 @@ error:
 	hashset_finalize(&tbl->memoize);
 	f_free(fsm, tbl->states);
 	f_free(fsm, tbl->edges);
+	f_free(fsm, tbl->eps_closures);
 
 	return 0;
 }
@@ -467,6 +477,7 @@ static void epsilon_table_finalize(const struct fsm *fsm, struct epsilon_table *
 
 	f_free(fsm, tbl->states);
 	f_free(fsm, tbl->edges);
+	f_free(fsm, tbl->eps_closures);
 
 	tbl->states = NULL;
 	tbl->edges  = NULL;
@@ -572,7 +583,7 @@ static void scc_dfs(struct epsilon_table *tbl, struct scc_data *data, unsigned i
 	}
 }
 
-static int find_strongly_connected_components(struct epsilon_table *tbl, unsigned int **scc_states, unsigned int **scc_offsets)
+static int find_strongly_connected_components(struct epsilon_table *tbl, unsigned int **scc_states, unsigned int **scc_offsets, unsigned int *maxlblp)
 {
 	static const struct scc_data zero;
 	struct scc_data data;
@@ -714,6 +725,10 @@ static int find_strongly_connected_components(struct epsilon_table *tbl, unsigne
 		} else {
 			free(max_off);
 		}
+
+		if (maxlblp) {
+			*maxlblp = maxlbl;
+		}
 	}
 
 	ret = 0;
@@ -724,6 +739,149 @@ finish:
 	free(data.lowest);
 	free(data.labels);
 	free(data.on_stack);
+
+	return ret;
+}
+
+static int single_state_compare(const void *a, const void *b)
+{
+	const struct fsm_state *ea = a, *eb = b;
+	return (ea > eb) - (ea < eb);
+}
+
+static unsigned long single_state_hash(const void *a)
+{
+	const struct fsm_state *st = a;
+	return hashrec(st, sizeof *st);
+}
+
+static int
+build_epsilon_closures(struct epsilon_table *tbl, unsigned int *scc_states, unsigned int *scc_offsets, size_t maxlbl)
+{
+	const static struct state_array arr_zero;
+
+	unsigned int lbl;
+	size_t scc_ind;
+	struct hashset memb; /* use a hash set for merging set memberships */
+	struct state_array arr = arr_zero;
+	int ret = -1;
+
+	if (!hashset_initialize(&memb, 128, DEFAULT_LOAD, single_state_hash, single_state_compare)) {
+		return -1;
+	}
+
+	/* -- */
+	/* iterate over scc's, building up epsilon closures */
+
+	fprintf(stderr, "--- ITERATIVELY BUILDING EPSILON CLOSURES ---\n");
+
+	scc_ind = 0;
+	for (lbl=0; lbl < maxlbl; lbl++) {
+		unsigned int scc_ind0 = scc_ind;
+
+		fprintf(stderr, "-- label %u ind0=%u\n", lbl, scc_ind0);
+
+		for (; scc_ind < scc_offsets[lbl]; scc_ind++) {
+			unsigned int st;
+			unsigned int e,e0,e1;
+			struct fsm_state *state;
+
+			st = scc_states[scc_ind];
+			state = tbl->states[st].st;
+
+			fprintf(stderr, "  [st=%4u] lbl=%u\n", st, state->eps_scc);
+
+			assert(lbl+1 == state->eps_scc);
+
+			/* iterate over epsilon edges, add states */
+
+			if (!hashset_contains(&memb, state)) {
+				if (hashset_add(&memb, (void *)state) == NULL) {
+					goto finish;
+				}
+
+				if (state_array_add(&arr, state) == NULL) {
+					goto finish;
+				}
+			}
+
+			e0 = tbl->states[st].edge0;
+			e1 = tbl->states[st+1].edge0;
+			for (e = e0; e < e1; e++) {
+				unsigned int st1;
+				struct state_set *closure;
+				struct fsm_state *state1,*cstate;
+				struct state_iter it;
+
+				st1 = tbl->edges[e].dst;
+				state1 = tbl->states[st1].st;
+
+				if (state1->eps_scc == lbl+1) {
+					continue;
+				}
+
+				closure = tbl->eps_closures[st1];
+
+				assert(closure != NULL);
+
+				for (cstate = state_set_first(closure,&it); cstate != NULL; cstate = state_set_next(&it)) {
+					if (hashset_contains(&memb, cstate)) {
+						continue;
+					}
+
+					if (hashset_add(&memb, cstate) == NULL) {
+						goto finish;
+					}
+
+					if (state_array_add(&arr, cstate) == NULL) {
+						goto finish;
+					}
+				}
+			}
+		}
+
+		if (arr.len > 0) {
+			struct state_set *set;
+			unsigned int st;
+
+			set = state_set_create_from_array((struct fsm_state **)arr.states, arr.len);
+			if (set == NULL) {
+				goto finish;
+			}
+
+			arr = arr_zero;
+
+			st = scc_states[scc_ind0];
+			tbl->eps_closures[st] = set;
+
+			for (scc_ind = scc_ind0+1; scc_ind < scc_offsets[lbl]; scc_ind++) {
+				unsigned int st;
+				struct state_set *cp;
+
+				st = scc_states[scc_ind];
+
+				cp = state_set_copy(set);
+				if (cp == NULL) {
+					goto finish;
+				}
+
+				tbl->eps_closures[st] = cp;
+			}
+		}
+
+		if (memb.nitems > 0) {
+			hashset_clear(&memb);
+		}
+	}
+
+	ret = 0;
+
+finish:
+	hashset_finalize(&memb);
+
+	if (arr.len > 0) {
+		free(arr.states);
+	}
 
 	return ret;
 }
@@ -765,6 +923,7 @@ epsilon_closure_usetbl(const struct fsm *fsm, struct epsilon_table *tbl, const s
 	const static struct state_array arr_init;
 	struct state_array arr = arr_init;
 	struct epsilon_state *est;
+	ptrdiff_t sind;
 	unsigned int closure_id;
 
 	est = epsilon_table_lookup(tbl, state);
@@ -772,8 +931,13 @@ epsilon_closure_usetbl(const struct fsm *fsm, struct epsilon_table *tbl, const s
 		return NULL;
 	}
 
+	sind = est - &tbl->states[0];
+	if (tbl->eps_closures[sind] != NULL) {
+		return tbl->eps_closures[sind];
+	}
+
 	closure_id = ++tbl->last_closure_id;
-	if (epsilon_closure_tbl(tbl,est - &tbl->states[0],closure_id,&arr) == NULL) {
+	if (epsilon_closure_tbl(tbl,sind,closure_id,&arr) == NULL) {
 		f_free(fsm, arr.states);
 		return NULL;
 	}
@@ -826,7 +990,7 @@ int fsm_label_epsilon_scc(struct fsm *fsm)
 		goto finish;
 	}
 
-	ret = find_strongly_connected_components(&epstbl, NULL, NULL);
+	ret = find_strongly_connected_components(&epstbl, NULL, NULL, NULL);
 
 finish:
 	epsilon_table_finalize(fsm,&epstbl);
@@ -1079,6 +1243,10 @@ determinise(struct fsm *nfa,
 	static const struct mapping_iter_save sv_init;
 	static const struct epsilon_table epstbl_init;
 
+	unsigned int *scc_states = NULL;
+	unsigned int *scc_offs   = NULL;
+	unsigned int maxlbl = 0;
+
 	struct epsilon_table epstbl = epstbl_init;
 
 	struct mapping *curr;
@@ -1133,6 +1301,14 @@ determinise(struct fsm *nfa,
 	assert(trans != NULL);
 
 	if (!epsilon_table_initialize(&epstbl,nfa)) {
+		goto error;
+	}
+
+	if (find_strongly_connected_components(&epstbl, &scc_states, &scc_offs, &maxlbl) < 0) {
+		goto error;
+	}
+
+	if (build_epsilon_closures(&epstbl,scc_states,scc_offs,maxlbl) < 0) {
 		goto error;
 	}
 
@@ -1269,6 +1445,8 @@ determinise(struct fsm *nfa,
 	return dfa;
 
 error:
+	free(scc_states);
+	free(scc_offs);
 	epsilon_table_finalize(nfa,&epstbl);
 	clear_mappings(dfa, mappings);
 	fsm_free(dfa);
