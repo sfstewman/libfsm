@@ -21,6 +21,8 @@
 #include <fsm/walk.h>
 #include <fsm/options.h>
 
+#include <ctype.h>
+
 #include "internal.h"
 
 /* hash function for a set of sorted states */
@@ -1180,16 +1182,25 @@ allstatesreachableby(struct state_set *set, char c, struct state_set *sl)
 {
 	struct fsm_state *s;
 	struct state_iter it;
+	static unsigned long calls = 0, hits = 0, manymisses = 0, manyhits = 0, halfhits = 0, funccalls = 0;
+	unsigned int thiscalls = 0, thishits = 0;
 
 	assert(set != NULL);
 
+	fprintf(stderr, "%s: set %p, edge '%c' (%d)\n", __func__, (void *)set,isprint((unsigned char)c) ? c : ' ', c);
+
+	thiscalls = state_set_count(set);
 	for (s = state_set_first(set, &it); s != NULL; s = state_set_next(&it)) {
 		struct fsm_state *es;
 		struct fsm_edge *to;
 
-		if ((to = fsm_hasedge(s, (unsigned char) c)) != NULL) {
+		/* fprintf(stderr, "  --> st %p\n", (void *)s); */
+
+		to = fsm_hasedge(s, (unsigned char) c);
+		if (to != NULL) {
 			struct state_iter jt;
 
+			/* fprintf(stderr, "    --> ed '%p'\n", (void *)to); */
 			for (es = state_set_first(to->sl, &jt); es != NULL; es = state_set_next(&jt)) {
 				assert(es != NULL);
 
@@ -1197,8 +1208,24 @@ allstatesreachableby(struct state_set *set, char c, struct state_set *sl)
 					return 0;
 				}
 			}
+
+			thishits++;
 		}
 	}
+
+	funccalls++;
+	if (thishits < thiscalls / 4) {
+		manymisses++;
+	} else if (thishits > thiscalls - thiscalls/4) {
+		manyhits++;
+	} else if (thishits >= thiscalls/2) {
+		halfhits++;
+	}
+
+	calls += thiscalls;
+	hits  += thishits;
+
+	fprintf(stderr, "  %u / %u hits, %lu / %lu total.  manyhits=%lu manymisses=%lu halfhits=%lu  funccalls=%lu\n", thishits,thiscalls, hits,calls,manyhits,manymisses,halfhits,funccalls);
 
 	return 1;
 }
