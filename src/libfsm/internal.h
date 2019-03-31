@@ -13,6 +13,9 @@
 #include <fsm/fsm.h>
 #include <fsm/options.h>
 
+#include <adt/hashset.h>
+
+struct set;
 struct edge_set;
 struct state_set;
 
@@ -122,6 +125,29 @@ state_array_add(struct state_array *arr, struct fsm_state *st);
 
 struct state_array *
 state_array_copy(struct state_array *dst, const struct state_array *src);
+
+/* a set of uints */
+struct uintset {
+	struct hashset set;
+};
+
+int
+uintset_initialize(struct uintset *s, size_t nbuckets);
+
+void
+uintset_finalize(struct uintset *s);
+
+void *
+uintset_add(struct uintset *s, unsigned int i);
+
+size_t
+uintset_count(const struct uintset *s);
+
+void
+uintset_clear(struct uintset *s);
+
+int
+uintset_contains(const struct uintset *s, unsigned int i);
 
 #endif
 

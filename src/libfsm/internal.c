@@ -63,3 +63,76 @@ state_array_copy(struct state_array *dst, const struct state_array *src)
 	return dst;
 }
 
+static int
+cmp_voidp_as_ulong(const void *a, const void *b)
+{
+	unsigned long va,vb;
+
+	assert(a != NULL);
+	assert(b != NULL);
+
+	va = (unsigned long)a;
+	vb = (unsigned long)b;
+
+	return (va > vb) - (va < vb);
+}
+
+uint32_t jenkins_u32_hash(uint32_t a)
+{
+	a = (a+0x7ed55d16) + (a<<12);
+	a = (a^0xc761c23c) ^ (a>>19);
+	a = (a+0x165667b1) + (a<<5);
+	a = (a+0xd3a2646c) ^ (a<<9);
+	a = (a+0xfd7046c5) + (a<<3);
+	a = (a^0xb55a4f09) ^ (a>>16);
+	return a;
+}
+
+
+static unsigned long
+hash_voidp_as_ulong(const void *a)
+{
+	const unsigned long va = (unsigned long)a;
+	assert(a != NULL);
+
+	return jenkins_u32_hash(va-1);
+}
+
+int
+uintset_initialize(struct uintset *s, size_t nbuckets)
+{
+	return hashset_initialize(&s->set, nbuckets, DEFAULT_LOAD, hash_voidp_as_ulong, cmp_voidp_as_ulong);
+}
+
+void
+uintset_finalize(struct uintset *s)
+{
+	hashset_finalize(&s->set);
+}
+
+void *
+uintset_add(struct uintset *s, unsigned int i)
+{
+	unsigned long l = i + 1;
+	return hashset_add(&s->set, (void *)l);
+}
+
+size_t
+uintset_count(const struct uintset *s)
+{
+	return hashset_count(&s->set);
+}
+
+void
+uintset_clear(struct uintset *s)
+{
+	hashset_clear(&s->set);
+}
+
+int
+uintset_contains(const struct uintset *s, unsigned int i)
+{
+	unsigned long l = i + 1;
+	return hashset_contains(&s->set, (void *)l) != NULL;
+}
+
