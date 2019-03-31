@@ -136,3 +136,80 @@ uintset_contains(const struct uintset *s, unsigned int i)
 	return hashset_contains(&s->set, (void *)l) != NULL;
 }
 
+void
+edge_bmap_set(struct edge_bmap *bmap, unsigned char sym)
+{
+	int ind = sym/EDGE_BMAP_BITSPERBUCKET, shift = sym%EDGE_BMAP_BITSPERBUCKET;
+	assert(ind >= 0 && ind < EDGE_BMAP_NBUCKETS);
+	assert(shift >= 0 && shift < EDGE_BMAP_BITSPERBUCKET );
+
+	bmap->bits[ind] |= (1 << shift);
+}
+
+void
+edge_bmap_or_eq(struct edge_bmap *a, const struct edge_bmap *b)
+{
+	int i;
+	for (i=0; i < EDGE_BMAP_NBUCKETS; i++) {
+		a->bits[i] |= b->bits[i];
+	}
+}
+
+int
+edge_bmap_test(const struct edge_bmap *bmap, unsigned char sym)
+{
+	int ind = sym/EDGE_BMAP_BITSPERBUCKET, shift = sym%EDGE_BMAP_BITSPERBUCKET;
+	assert(ind >= 0 && ind < EDGE_BMAP_NBUCKETS);
+	assert(shift >= 0 && shift < EDGE_BMAP_BITSPERBUCKET );
+
+	return bmap->bits[ind] & (1<<shift);
+}
+
+void
+edge_bmap_zero(struct edge_bmap *bmap)
+{
+	assert(bmap != NULL);
+
+	memset(bmap->bits,0,sizeof bmap->bits);
+}
+
+int
+edge_bmap_next(const struct edge_bmap *bmap, struct edge_bmap_iter *it)
+{
+	int bit = it->bit+1;
+
+	assert(bmap != NULL);
+	assert(it   != NULL);
+
+	while (bit < EDGE_BMAP_NBITS) {
+		int bkt,ind;
+
+		bkt = bit/EDGE_BMAP_BITSPERBUCKET;
+		ind = bit%EDGE_BMAP_BITSPERBUCKET;
+
+		if (bmap->bits[bkt] == 0) {
+			bit = EDGE_BMAP_BITSPERBUCKET*(bkt+1);
+			continue;
+		}
+
+		if (bmap->bits[bkt] & (1<<ind)) {
+			break;
+		}
+
+		bit++;
+	}
+
+	it->bit = bit;
+	return (bit < EDGE_BMAP_NBITS) ? bit : -1;
+}
+
+int
+edge_bmap_first(const struct edge_bmap *bmap, struct edge_bmap_iter *it)
+{
+	assert(bmap != NULL);
+	assert(it   != NULL);
+
+	it->bit = -1;
+	return edge_bmap_next(bmap,it);
+}
+

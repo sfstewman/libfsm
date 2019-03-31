@@ -149,5 +149,37 @@ uintset_clear(struct uintset *s);
 int
 uintset_contains(const struct uintset *s, unsigned int i);
 
+enum { EDGE_BMAP_NBITS         = 256 };
+enum { EDGE_BMAP_NBUCKETS      =  32 };
+enum { EDGE_BMAP_BITSPERBUCKET =   8 };
+
+struct edge_bmap {
+	unsigned char bits[EDGE_BMAP_NBUCKETS];  /* bitmap of edges.  XXX - better as uint64_t? */
+};
+
+struct edge_bmap_iter {
+	int bit;
+};
+
+void
+edge_bmap_set(struct edge_bmap *bmap, unsigned char sym);
+
+/* a |= b */
+void
+edge_bmap_or_eq(struct edge_bmap *a, const struct edge_bmap *b);
+
+/* test that edges has bit 'sym' set */
+int
+edge_bmap_test(const struct edge_bmap *bmap, unsigned char sym);
+
+void
+edge_bmap_zero(struct edge_bmap *bmap);
+
+int
+edge_bmap_next(const struct edge_bmap *bmap, struct edge_bmap_iter *it);
+
+int
+edge_bmap_first(const struct edge_bmap *bmap, struct edge_bmap_iter *it);
+
 #endif
 
