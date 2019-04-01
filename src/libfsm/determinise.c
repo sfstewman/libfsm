@@ -217,18 +217,6 @@ struct epsilon_map_entry {
 	struct epsilon_state *est;
 };
 
-static int epsilon_state_compare(const void *a, const void *b)
-{
-	const struct epsilon_state *ea = a, *eb = b;
-	return (ea->st > eb->st) - (ea->st < eb->st);
-}
-
-static unsigned long epsilon_state_hash(const void *a)
-{
-	const struct epsilon_state *ent = a;
-	return hashrec(ent->st, sizeof *(ent->st));
-}
-
 static int epsilon_memo_cmp(const void *a, const void *b)
 {
 	const struct epsilon_memo *ma = a, *mb = b;
@@ -247,15 +235,6 @@ epsilon_table_lookup(struct epsilon_table *tbl, const struct fsm_state *st)
 	(void)tbl;
 
 	return st->tmp.eps;
-
-	/*
-	const static struct epsilon_state zero;
-	st->equiv = (struct fsm_state *)&tbl->states[state_ind];
-
-	struct epsilon_state tmp = zero;
-	tmp.st = st;
-	return hashset_contains(&tbl->rev_map, &tmp);
-	*/
 }
 
 static struct state_set *
@@ -330,7 +309,6 @@ static int epsilon_table_initialize(struct epsilon_table *tbl, const struct fsm 
 	static const struct epsilon_table init;
 	size_t nstates, neps;
 	struct fsm_state *st;
-	size_t revmap_nbuckets;
 	size_t state_ind, edge_ind;
 
 	*tbl = init;
@@ -351,11 +329,6 @@ static int epsilon_table_initialize(struct epsilon_table *tbl, const struct fsm 
 	/* fprintf(stderr, "\n--[ nstates = %zu, neps = %zu ]--\n\n", nstates,neps); */
 
 	/* initialize reverse map */
-	revmap_nbuckets = nstates * (int)(1+1.0/DEFAULT_LOAD);
-	if (!hashset_initialize(&tbl->rev_map, revmap_nbuckets, DEFAULT_LOAD, epsilon_state_hash, epsilon_state_compare)) {
-		goto error;
-	}
-
 	if (!hashset_initialize(&tbl->eps_memoize, DEFAULT_NBUCKETS, DEFAULT_LOAD, epsilon_memo_hash, epsilon_memo_cmp)) {
 		goto error;
 	}
@@ -388,10 +361,6 @@ static int epsilon_table_initialize(struct epsilon_table *tbl, const struct fsm 
 		tbl->states[state_ind].st = st;
 		tbl->states[state_ind].closure_id = 0;
 		tbl->states[state_ind].eps_edge0 = 0;
-
-		if (hashset_add(&tbl->rev_map, &tbl->states[state_ind]) == NULL) {
-			goto error;
-		}
 
 		/* hijack equiv field to speed things up... */
 		st->tmp.eps = &tbl->states[state_ind];
@@ -450,7 +419,6 @@ static int epsilon_table_initialize(struct epsilon_table *tbl, const struct fsm 
 	return 1;
 
 error:
-	hashset_finalize(&tbl->rev_map);
 	hashset_finalize(&tbl->eps_memoize);
 	f_free(fsm, tbl->states);
 	f_free(fsm, tbl->eps_edges);
@@ -464,8 +432,6 @@ static void epsilon_table_finalize(const struct fsm *fsm, struct epsilon_table *
 	if (tbl == NULL) {
 		return;
 	}
-
-	hashset_finalize(&tbl->rev_map);
 
 	if (tbl->eps_memoize.buckets != NULL) {
 		struct hashset_iter it;
