@@ -181,6 +181,8 @@ struct epsilon_state {
 	/* original state */
 	struct fsm_state *st;
 
+	struct edge_bmap edges;
+
 	/* counter for identifying whether state is in the current closure */
 	unsigned int closure_id;
 
@@ -202,8 +204,10 @@ struct epsilon_table {
 	size_t nstates;
 
 	struct epsilon_state *states;
+
 	struct edge_pair *eps_edges;
-	struct hashset rev_map;
+	struct edge_pair *sym_edges[257];
+
 	struct hashset eps_memoize;
 
 	struct state_set **eps_closures;
@@ -216,6 +220,26 @@ struct epsilon_map_entry {
 	struct fsm_state *st;
 	struct epsilon_state *est;
 };
+
+static int cmp_epsilon_state(const void *a, const void *b)
+{
+	const struct epsilon_state *ea = a, *eb = b;
+	return (ea->st > eb->st) - (ea->st < eb->st);
+}
+
+static int
+cmp_edge_pair(const void *a, const void *b)
+{
+	const struct edge_pair *ea = a, *eb = b;
+	assert(a != NULL);
+	assert(b != NULL);
+
+	if (ea->src != eb->src) {
+		return (ea->src > eb->src) - (ea->src < eb->src);
+	}
+
+	return (ea->dst > eb->dst) - (ea->dst < eb->dst);
+}
 
 static int epsilon_memo_cmp(const void *a, const void *b)
 {
@@ -306,34 +330,18 @@ error:
 
 static int epsilon_table_initialize(struct epsilon_table *tbl, const struct fsm *fsm)
 {
-	static const struct epsilon_table init;
-	size_t nstates, neps;
-	struct fsm_state *st;
+	static const struct epsilon_table zero_tbl;
+	size_t nstates, neps, nedges, totedges;
 	size_t state_ind, edge_ind;
+	struct fsm_state *st;
+	unsigned int edge_count[256];
 
-	*tbl = init;
+	*tbl = zero_tbl;
 
 	/* count states */
-	nstates = neps = 0;
-	for (st = fsm->sl; st != NULL; st = st->next) {
-		const struct fsm_edge *e;
+	nstates = fsm_countstates(fsm);
 
-		nstates++;
-
-		e = fsm_hasedge(st, FSM_EDGE_EPSILON);
-		if (e != NULL) {
-			neps += state_set_count(e->sl);
-		}
-	}
-
-	/* fprintf(stderr, "\n--[ nstates = %zu, neps = %zu ]--\n\n", nstates,neps); */
-
-	/* initialize reverse map */
-	if (!hashset_initialize(&tbl->eps_memoize, DEFAULT_NBUCKETS, DEFAULT_LOAD, epsilon_memo_hash, epsilon_memo_cmp)) {
-		goto error;
-	}
-
-	/* allocate state and edge arrays */
+	/* allocate state arrays */
 	tbl->states = f_malloc(fsm, (nstates+1) * sizeof *tbl->states);
 	if (tbl->states == NULL) {
 		goto error;
@@ -344,66 +352,156 @@ static int epsilon_table_initialize(struct epsilon_table *tbl, const struct fsm 
 		goto error;
 	}
 
-	if (neps > 0) {
-		tbl->eps_edges = f_malloc(fsm, neps * sizeof *tbl->eps_edges);
+	memset(tbl->eps_closures, 0, nstates * sizeof *tbl->eps_closures);
+
+	/*
+	neps = 0;
+	for (st = fsm->sl; st != NULL; st = st->next) {
+		const struct fsm_edge *e;
+
+		e = fsm_hasedge(st, FSM_EDGE_EPSILON);
+		if (e != NULL) {
+			neps += state_set_count(e->sl);
+		}
+	}
+	*/
+
+	/* count edges, initially record states */
+	state_ind = nedges = neps = 0;
+	memset(&edge_count[0], 0, sizeof edge_count);
+	for (st = fsm->sl; st != NULL; st = st->next) {
+		const struct fsm_edge *e;
+		struct edge_iter jt;
+
+		assert(state_ind < nstates);
+
+		tbl->states[state_ind].st = st;
+		tbl->states[state_ind].closure_id = 0;
+		tbl->states[state_ind].eps_edge0 = 0;
+		edge_bmap_zero(&tbl->states[state_ind].edges);
+
+		for (e = edge_set_first(st->edges, &jt); e != NULL; e = edge_set_next(&jt)) {
+			unsigned int n;
+
+			assert(e->symbol >= 0);
+
+			n = state_set_count(e->sl);
+
+			assert(n > 0);
+
+			if (e->symbol == FSM_EDGE_EPSILON) {
+				neps += n;
+			} else if (e->symbol <= UCHAR_MAX) {
+				edge_count[e->symbol] += n;
+				nedges += n;
+
+				/* add sym entry to bitmap */
+				edge_bmap_set(&tbl->states[state_ind].edges, e->symbol);
+			}
+		}
+
+		state_ind++;
+	}
+
+	/* fprintf(stderr, "\n--[ nstates = %zu, neps = %zu ]--\n\n", nstates,neps); */
+
+	/* initialize reverse map */
+	if (!hashset_initialize(&tbl->eps_memoize, DEFAULT_NBUCKETS, DEFAULT_LOAD, epsilon_memo_hash, epsilon_memo_cmp)) {
+		goto error;
+	}
+
+	totedges = neps + nedges;
+
+	/* allocate edge arrays */
+	if (totedges > 0) {
+		tbl->eps_edges = f_malloc(fsm, totedges * sizeof *tbl->eps_edges);
 		if (tbl->eps_edges == NULL) {
 			goto error;
 		}
 	}
 
-	memset(tbl->eps_closures, 0, nstates * sizeof *tbl->eps_closures);
-
-	/* iterate through states, filling in the state array and the index
-	 * lookup
+	/* sort states based on struct fsm_state *, set 'equiv' fields on the states.
+	 *
+	 * We have to sort them first because we want the fsm state indexes to
+	 * have the same order as their corresponding struct fsm_state * values,
+	 * and there's no guarantee that the edges are ordered this way in the
+	 * graph's sl list.
 	 */
-	state_ind = 0;
-	for (st = fsm->sl; st != NULL; st = st->next) {
-		tbl->states[state_ind].st = st;
-		tbl->states[state_ind].closure_id = 0;
-		tbl->states[state_ind].eps_edge0 = 0;
+	qsort(tbl->states, nstates, sizeof tbl->states[0], cmp_epsilon_state);
 
-		/* hijack equiv field to speed things up... */
-		st->tmp.eps = &tbl->states[state_ind];
-
-		state_ind++;
+	for (state_ind=0; state_ind < nstates; state_ind++) {
+		tbl->states[state_ind].st->tmp.eps = &tbl->states[state_ind];
 	}
 
-	/* next iterate through edges, filling in edge table and
-	 * updating the eps_edge0 entries in the state table
-	 */
+	/* build edge table */
+	tbl->sym_edges[0] = tbl->eps_edges + neps;
+	for (edge_ind=0; edge_ind < 256; edge_ind++) {
+		tbl->sym_edges[edge_ind+1] = tbl->sym_edges[edge_ind] + edge_count[edge_ind];
+	}
+
 	edge_ind  = 0;
+	memset(&edge_count[0], 0, sizeof edge_count);
+
 	for (state_ind = 0; state_ind < nstates; state_ind++) {
 		const struct fsm_state *st0;
-		const struct fsm_state *st1;
 		const struct fsm_edge *e;
-		struct state_iter it;
+		struct edge_iter jt;
 
 		st0 = tbl->states[state_ind].st;
 		tbl->states[state_ind].eps_edge0 = edge_ind;
 
-		e = fsm_hasedge(st0, FSM_EDGE_EPSILON);
-		if (e == NULL) {
-			continue;
+		for (e = edge_set_first(st0->edges, &jt); e != NULL; e = edge_set_next(&jt)) {
+			struct edge_pair *edge;
+			const struct fsm_state *st1;
+			struct state_iter kt;
+
+			if (e->symbol <= UCHAR_MAX) {
+				/* epsilon edge: iterate through dest states,
+				 * filling in edge table and updating the
+				 * eps_edge0 entries in the state table
+				 */
+
+				edge = tbl->sym_edges[e->symbol] + edge_count[e->symbol];
+				assert(edge < tbl->sym_edges[e->symbol+1]);
+
+				for (st1 = state_set_first(e->sl, &kt); st1 != NULL; st1 = state_set_next(&kt)) {
+					edge->src = st0->tmp.eps - &tbl->states[0];   /* XXX: hack */
+					edge->dst = st1->tmp.eps - &tbl->states[0];  /* XXX: hack */
+					edge++;
+				}
+
+				edge_count[e->symbol] += state_set_count(e->sl);
+				assert(edge_count[e->symbol] <= tbl->sym_edges[e->symbol+1] - tbl->sym_edges[e->symbol]);
+
+			} else if (e->symbol == FSM_EDGE_EPSILON) {
+				for (st1 = state_set_first(e->sl, &kt); st1 != NULL; st1 = state_set_next(&kt)) {
+					struct epsilon_state *est;
+
+					assert(edge_ind < neps);
+
+					est = st1->tmp.eps;
+					assert(est != NULL);
+
+					tbl->eps_edges[edge_ind].src = state_ind;
+					tbl->eps_edges[edge_ind].dst = est - &tbl->states[0];
+
+					edge_ind++;
+				}
+			}
 		}
 
-		for (st1 = state_set_first(e->sl, &it); st1 != NULL; st1 = state_set_next(&it)) {
-			struct epsilon_state *est;
+	}
 
-			assert(edge_ind < neps);
-
-			est = epsilon_table_lookup(tbl, st1);
-			assert(est != NULL);
-
-			if (est == NULL) {
-				/* something went wrong */
-				/* XXX - provide better feedback? */
-				goto error;
+	/* sort edges */
+	{
+		int sym;
+		for (sym=0; sym < UCHAR_MAX+1; sym++) {
+			ptrdiff_t sym_nedges = tbl->sym_edges[sym+1] - tbl->sym_edges[sym];
+			assert(edge_count[sym] == sym_nedges);
+			if (sym_nedges > 1) {
+				struct edge_pair *edge0 = tbl->sym_edges[sym];
+				qsort(edge0, sym_nedges, sizeof *edge0, cmp_edge_pair);
 			}
-
-			tbl->eps_edges[edge_ind].src = state_ind;
-			tbl->eps_edges[edge_ind].dst = est - &tbl->states[0];
-
-			edge_ind++;
 		}
 	}
 
