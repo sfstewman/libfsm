@@ -184,11 +184,11 @@ struct epsilon_state {
 	/* counter for identifying whether state is in the current closure */
 	unsigned int closure_id;
 
-	/* first edge */
-	unsigned int edge0;
+	/* first epsilon edge */
+	unsigned int eps_edge0;
 };
 
-struct epsilon_edge {
+struct edge_pair {
 	unsigned int src;
 	unsigned int dst;
 };
@@ -202,9 +202,9 @@ struct epsilon_table {
 	size_t nstates;
 
 	struct epsilon_state *states;
-	struct epsilon_edge *edges;
+	struct edge_pair *eps_edges;
 	struct hashset rev_map;
-	struct hashset memoize;
+	struct hashset eps_memoize;
 
 	struct state_set **eps_closures;
 
@@ -264,7 +264,7 @@ epsilon_memo_lookup(struct epsilon_table *tbl, struct state_set *s)
 	struct epsilon_memo memo, *lkup;
 	memo.in_set = s;
 
-	lkup = hashset_contains(&tbl->memoize, &memo);
+	lkup = hashset_contains(&tbl->eps_memoize, &memo);
 	if (lkup == NULL) {
 		return NULL;
 	}
@@ -314,7 +314,7 @@ epsilon_memo_remember(struct epsilon_table *tbl, struct state_set *s, struct sta
 		goto error;
 	}
 
-	if (hashset_add(&tbl->memoize, memo) == NULL) {
+	if (hashset_add(&tbl->eps_memoize, memo) == NULL) {
 		goto error;
 	}
 
@@ -328,7 +328,7 @@ error:
 static int epsilon_table_initialize(struct epsilon_table *tbl, const struct fsm *fsm)
 {
 	static const struct epsilon_table init;
-	size_t nstates, nedges;
+	size_t nstates, neps;
 	struct fsm_state *st;
 	size_t revmap_nbuckets;
 	size_t state_ind, edge_ind;
@@ -336,7 +336,7 @@ static int epsilon_table_initialize(struct epsilon_table *tbl, const struct fsm 
 	*tbl = init;
 
 	/* count states */
-	nstates = nedges = 0;
+	nstates = neps = 0;
 	for (st = fsm->sl; st != NULL; st = st->next) {
 		const struct fsm_edge *e;
 
@@ -344,11 +344,11 @@ static int epsilon_table_initialize(struct epsilon_table *tbl, const struct fsm 
 
 		e = fsm_hasedge(st, FSM_EDGE_EPSILON);
 		if (e != NULL) {
-			nedges += state_set_count(e->sl);
+			neps += state_set_count(e->sl);
 		}
 	}
 
-	/* fprintf(stderr, "\n--[ nstates = %zu, nedges = %zu ]--\n\n", nstates,nedges); */
+	/* fprintf(stderr, "\n--[ nstates = %zu, neps = %zu ]--\n\n", nstates,neps); */
 
 	/* initialize reverse map */
 	revmap_nbuckets = nstates * (int)(1+1.0/DEFAULT_LOAD);
@@ -356,7 +356,7 @@ static int epsilon_table_initialize(struct epsilon_table *tbl, const struct fsm 
 		goto error;
 	}
 
-	if (!hashset_initialize(&tbl->memoize, DEFAULT_NBUCKETS, DEFAULT_LOAD, epsilon_memo_hash, epsilon_memo_cmp)) {
+	if (!hashset_initialize(&tbl->eps_memoize, DEFAULT_NBUCKETS, DEFAULT_LOAD, epsilon_memo_hash, epsilon_memo_cmp)) {
 		goto error;
 	}
 
@@ -371,9 +371,9 @@ static int epsilon_table_initialize(struct epsilon_table *tbl, const struct fsm 
 		goto error;
 	}
 
-	if (nedges > 0) {
-		tbl->edges = f_malloc(fsm, nedges * sizeof *tbl->edges);
-		if (tbl->edges == NULL) {
+	if (neps > 0) {
+		tbl->eps_edges = f_malloc(fsm, neps * sizeof *tbl->eps_edges);
+		if (tbl->eps_edges == NULL) {
 			goto error;
 		}
 	}
@@ -387,7 +387,7 @@ static int epsilon_table_initialize(struct epsilon_table *tbl, const struct fsm 
 	for (st = fsm->sl; st != NULL; st = st->next) {
 		tbl->states[state_ind].st = st;
 		tbl->states[state_ind].closure_id = 0;
-		tbl->states[state_ind].edge0 = 0;
+		tbl->states[state_ind].eps_edge0 = 0;
 
 		if (hashset_add(&tbl->rev_map, &tbl->states[state_ind]) == NULL) {
 			goto error;
@@ -400,7 +400,7 @@ static int epsilon_table_initialize(struct epsilon_table *tbl, const struct fsm 
 	}
 
 	/* next iterate through edges, filling in edge table and
-	 * updating the edge0 entries in the state table
+	 * updating the eps_edge0 entries in the state table
 	 */
 	edge_ind  = 0;
 	for (state_ind = 0; state_ind < nstates; state_ind++) {
@@ -410,7 +410,7 @@ static int epsilon_table_initialize(struct epsilon_table *tbl, const struct fsm 
 		struct state_iter it;
 
 		st0 = tbl->states[state_ind].st;
-		tbl->states[state_ind].edge0 = edge_ind;
+		tbl->states[state_ind].eps_edge0 = edge_ind;
 
 		e = fsm_hasedge(st0, FSM_EDGE_EPSILON);
 		if (e == NULL) {
@@ -420,7 +420,7 @@ static int epsilon_table_initialize(struct epsilon_table *tbl, const struct fsm 
 		for (st1 = state_set_first(e->sl, &it); st1 != NULL; st1 = state_set_next(&it)) {
 			struct epsilon_state *est;
 
-			assert(edge_ind < nedges);
+			assert(edge_ind < neps);
 
 			est = epsilon_table_lookup(tbl, st1);
 			assert(est != NULL);
@@ -431,19 +431,19 @@ static int epsilon_table_initialize(struct epsilon_table *tbl, const struct fsm 
 				goto error;
 			}
 
-			tbl->edges[edge_ind].src = state_ind;
-			tbl->edges[edge_ind].dst = est - &tbl->states[0];
+			tbl->eps_edges[edge_ind].src = state_ind;
+			tbl->eps_edges[edge_ind].dst = est - &tbl->states[0];
 
 			edge_ind++;
 		}
 	}
 
-	assert(edge_ind == nedges);
+	assert(edge_ind == neps);
 
 	/* last extra state holds the edge count */
 	tbl->states[nstates].st = NULL;
 	tbl->states[nstates].closure_id = 0;
-	tbl->states[nstates].edge0 = edge_ind;
+	tbl->states[nstates].eps_edge0 = edge_ind;
 
 	tbl->nstates = nstates;
 
@@ -451,9 +451,9 @@ static int epsilon_table_initialize(struct epsilon_table *tbl, const struct fsm 
 
 error:
 	hashset_finalize(&tbl->rev_map);
-	hashset_finalize(&tbl->memoize);
+	hashset_finalize(&tbl->eps_memoize);
 	f_free(fsm, tbl->states);
-	f_free(fsm, tbl->edges);
+	f_free(fsm, tbl->eps_edges);
 	f_free(fsm, tbl->eps_closures);
 
 	return 0;
@@ -467,22 +467,22 @@ static void epsilon_table_finalize(const struct fsm *fsm, struct epsilon_table *
 
 	hashset_finalize(&tbl->rev_map);
 
-	if (tbl->memoize.buckets != NULL) {
+	if (tbl->eps_memoize.buckets != NULL) {
 		struct hashset_iter it;
 		struct epsilon_memo *m;
-		for (m = hashset_first(&tbl->memoize,&it); m != NULL; m = hashset_next(&it)) {
+		for (m = hashset_first(&tbl->eps_memoize,&it); m != NULL; m = hashset_next(&it)) {
 			epsilon_memo_free(m);
 		}
 	}
 
-	hashset_finalize(&tbl->memoize);
+	hashset_finalize(&tbl->eps_memoize);
 
 	f_free(fsm, tbl->states);
-	f_free(fsm, tbl->edges);
+	f_free(fsm, tbl->eps_edges);
 	f_free(fsm, tbl->eps_closures);
 
-	tbl->states = NULL;
-	tbl->edges  = NULL;
+	tbl->states    = NULL;
+	tbl->eps_edges = NULL;
 }
 
 /* data for Tarjan's strongly connected components alg */
@@ -533,14 +533,14 @@ static void scc_dfs(struct epsilon_table *tbl, struct scc_data *data, unsigned i
 		}
 	}
 
-	e0 = tbl->states[st].edge0;
-	e1 = tbl->states[st+1].edge0;
+	e0 = tbl->states[st].eps_edge0;
+	e1 = tbl->states[st+1].eps_edge0;
 	for (e=e0; e < e1; e++) {
 		unsigned int st1;
 
-		assert(tbl->edges[e].src == st);
+		assert(tbl->eps_edges[e].src == st);
 
-		st1 = tbl->edges[e].dst;
+		st1 = tbl->eps_edges[e].dst;
 
 		if (data->indexes[st1] == 0) {
 			scc_dfs(tbl, data, st1);
@@ -632,7 +632,7 @@ static int find_strongly_connected_components(struct epsilon_table *tbl, unsigne
 				continue;
 			}
 
-			if (tbl->states[st].edge0 == tbl->states[st+1].edge0) {
+			if (tbl->states[st].eps_edge0 == tbl->states[st+1].eps_edge0) {
 				/* no epsilon edges, no need for a DFS */
 				data.indexes[st] = ++data.idx;
 				data.labels[st]  = ++data.lbl;
@@ -807,15 +807,15 @@ build_epsilon_closures(struct epsilon_table *tbl, unsigned int *scc_states, unsi
 				}
 			}
 
-			e0 = tbl->states[st].edge0;
-			e1 = tbl->states[st+1].edge0;
+			e0 = tbl->states[st].eps_edge0;
+			e1 = tbl->states[st+1].eps_edge0;
 			for (e = e0; e < e1; e++) {
 				unsigned int st1;
 				struct state_set *closure;
 				struct fsm_state *state1,*cstate;
 				struct state_iter it;
 
-				st1 = tbl->edges[e].dst;
+				st1 = tbl->eps_edges[e].dst;
 				state1 = tbl->states[st1].st;
 
 				if (state1->eps_scc == lbl+1) {
@@ -906,12 +906,12 @@ epsilon_closure_tbl(struct epsilon_table *tbl, size_t s0, unsigned int closure_i
 
 	tbl->states[s0].closure_id = closure_id;
 
-	e0 = tbl->states[s0].edge0;
-	e1 = tbl->states[s0+1].edge0;
+	e0 = tbl->states[s0].eps_edge0;
+	e1 = tbl->states[s0+1].eps_edge0;
 
 	for (ei = e0; ei < e1; ei++) {
-		assert(tbl->edges[ei].src == s0);
-		if (epsilon_closure_tbl(tbl, tbl->edges[ei].dst, closure_id, states) == NULL) {
+		assert(tbl->eps_edges[ei].src == s0);
+		if (epsilon_closure_tbl(tbl, tbl->eps_edges[ei].dst, closure_id, states) == NULL) {
 			return NULL;
 		}
 	}
