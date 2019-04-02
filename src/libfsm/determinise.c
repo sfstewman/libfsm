@@ -213,6 +213,9 @@ struct epsilon_table {
 	struct state_set **eps_closures;
 
 	unsigned int last_closure_id;
+
+	struct uintset edgedests;
+	struct state_array currdests;
 };
 
 /* maps struct fsm_state * to index to struct epsilon_state * */
@@ -354,6 +357,14 @@ static int epsilon_table_initialize(struct epsilon_table *tbl, const struct fsm 
 
 	memset(tbl->eps_closures, 0, nstates * sizeof *tbl->eps_closures);
 
+	tbl->currdests.states = f_malloc(fsm, nstates * sizeof *tbl->currdests.states[0]);
+	if (tbl->currdests.states == NULL) {
+		goto error;
+	}
+
+	tbl->currdests.len = 0;
+	tbl->currdests.cap = nstates;
+
 	/*
 	neps = 0;
 	for (st = fsm->sl; st != NULL; st = st->next) {
@@ -372,6 +383,7 @@ static int epsilon_table_initialize(struct epsilon_table *tbl, const struct fsm 
 	for (st = fsm->sl; st != NULL; st = st->next) {
 		const struct fsm_edge *e;
 		struct edge_iter jt;
+		int nsyms;
 
 		assert(state_ind < nstates);
 
@@ -380,6 +392,7 @@ static int epsilon_table_initialize(struct epsilon_table *tbl, const struct fsm 
 		tbl->states[state_ind].eps_edge0 = 0;
 		edge_bmap_zero(&tbl->states[state_ind].edges);
 
+		nsyms = 0;
 		for (e = edge_set_first(st->edges, &jt); e != NULL; e = edge_set_next(&jt)) {
 			unsigned int n;
 
@@ -394,10 +407,21 @@ static int epsilon_table_initialize(struct epsilon_table *tbl, const struct fsm 
 			} else if (e->symbol <= UCHAR_MAX) {
 				edge_count[e->symbol] += n;
 				nedges += n;
+				nsyms++;
 
 				/* add sym entry to bitmap */
 				edge_bmap_set(&tbl->states[state_ind].edges, e->symbol);
 			}
+		}
+
+		{
+			int c,sym;
+			struct edge_bmap_iter biter;
+			c=0;
+			for (sym = edge_bmap_first(&tbl->states[state_ind].edges, &biter); sym >= 0; sym=edge_bmap_next(&tbl->states[state_ind].edges, &biter)) {
+				c++;
+			}
+			assert(c == (int)nsyms);
 		}
 
 		state_ind++;
@@ -503,6 +527,24 @@ static int epsilon_table_initialize(struct epsilon_table *tbl, const struct fsm 
 				qsort(edge0, sym_nedges, sizeof *edge0, cmp_edge_pair);
 			}
 		}
+
+		for (sym=0; sym < UCHAR_MAX+1; sym++) {
+			struct edge_pair *e0, *e1;
+			ptrdiff_t sym_nedges = tbl->sym_edges[sym+1] - tbl->sym_edges[sym];
+			assert(edge_count[sym] == sym_nedges);
+			if (sym_nedges < 2) {
+				continue;
+			}
+
+			e0 = tbl->sym_edges[sym];
+			for (e1 = e0+1; e1 < tbl->sym_edges[sym+1]; e0=e1,e1++) {
+				assert(e0 >= tbl->sym_edges[sym]);
+				assert(e1 < tbl->sym_edges[sym+1]);
+				assert(e1-e0 == 1);
+
+				assert(e0->src < e1->src || (e0->src == e1->src && e0->dst < e1->dst));
+			}
+		}
 	}
 
 	assert(edge_ind == neps);
@@ -514,19 +556,27 @@ static int epsilon_table_initialize(struct epsilon_table *tbl, const struct fsm 
 
 	tbl->nstates = nstates;
 
+	if (!uintset_initialize(&tbl->edgedests, DEFAULT_NBUCKETS)) {
+		goto error;
+	}
+
 	return 1;
 
 error:
 	hashset_finalize(&tbl->eps_memoize);
+	uintset_finalize(&tbl->edgedests);
 	f_free(fsm, tbl->states);
 	f_free(fsm, tbl->eps_edges);
 	f_free(fsm, tbl->eps_closures);
+	f_free(fsm, tbl->currdests.states);
 
 	return 0;
 }
 
 static void epsilon_table_finalize(const struct fsm *fsm, struct epsilon_table *tbl)
 {
+	const static struct epsilon_table zero_tbl;
+
 	if (tbl == NULL) {
 		return;
 	}
@@ -539,14 +589,16 @@ static void epsilon_table_finalize(const struct fsm *fsm, struct epsilon_table *
 		}
 	}
 
+	uintset_finalize(&tbl->edgedests);
+
 	hashset_finalize(&tbl->eps_memoize);
 
 	f_free(fsm, tbl->states);
 	f_free(fsm, tbl->eps_edges);
 	f_free(fsm, tbl->eps_closures);
+	f_free(fsm, tbl->currdests.states);
 
-	tbl->states    = NULL;
-	tbl->eps_edges = NULL;
+	*tbl = zero_tbl;
 }
 
 /* data for Tarjan's strongly connected components alg */
@@ -575,7 +627,7 @@ static void scc_dfs(struct epsilon_table *tbl, struct scc_data *data, unsigned i
 
 	if (data->labels[st] != 0) {
 		/* already part of an SCC */
-		fprintf(stderr, "--> state %u already labeled: %u\n", st, data->labels[st]);
+		/* fprintf(stderr, "--> state %u already labeled: %u\n", st, data->labels[st]); */
 		return;
 	}
 
@@ -587,6 +639,7 @@ static void scc_dfs(struct epsilon_table *tbl, struct scc_data *data, unsigned i
 	data->lowest[st] = data->indexes[st];
 	data->on_stack[st] = 1;
 
+	/*
 	fprintf(stderr, "--push--\n[%4u] %u [ind=%u : lo=%u : stk=%d]\n", data->top, st, data->indexes[st], data->lowest[st], data->on_stack[st]);
 	fprintf(stderr, "--stack--\n");
 	{
@@ -596,6 +649,7 @@ static void scc_dfs(struct epsilon_table *tbl, struct scc_data *data, unsigned i
 			fprintf(stderr, "[%4u] %u [ind=%u : lo=%u : stk=%d]\n", i, st1, data->indexes[st1], data->lowest[st1], data->on_stack[st1]);
 		}
 	}
+	*/
 
 	e0 = tbl->states[st].eps_edge0;
 	e1 = tbl->states[st+1].eps_edge0;
@@ -625,17 +679,19 @@ static void scc_dfs(struct epsilon_table *tbl, struct scc_data *data, unsigned i
 	/* the root of a strongly connected component */
 	lbl = ++data->lbl;
 	assert(lbl > 0);
-	fprintf(stderr, "--scc %u--\n", lbl);
+	/* fprintf(stderr, "--scc %u--\n", lbl); */
 	for (;;) {
 		unsigned int st1;
 
 		assert(data->top > 0);
 		st1 = data->stack[--data->top];
 
+		/*
 		fprintf(stderr, "[%4u] lbl=%4u st0=%u[ind=%u : lo=%u : stk=%d] st1=%u[ind=%u : lo=%u : stk=%d]\n",
 			data->top+1, lbl,
 			st,  data->indexes[st],  data->lowest[st],  data->on_stack[st],
 			st1, data->indexes[st1], data->lowest[st1], data->on_stack[st1]);
+		*/
 
 		assert(data->on_stack[st1] != 0);
 		data->on_stack[st1] = 0;
@@ -714,7 +770,7 @@ static int find_strongly_connected_components(struct epsilon_table *tbl, unsigne
 
 		minindexed = st; /* don't repeatedly search through things already given an index... */
 
-		fprintf(stderr, "=== search starting at %u ===\n", st);
+		/* fprintf(stderr, "=== search starting at %u ===\n", st); */
 		scc_dfs(tbl, &data, st);
 
 		/* state should be labeled after scc_dfs */
@@ -839,13 +895,17 @@ build_epsilon_closures(struct epsilon_table *tbl, unsigned int *scc_states, unsi
 	/* -- */
 	/* iterate over scc's, building up epsilon closures */
 
+	/*
 	fprintf(stderr, "--- ITERATIVELY BUILDING EPSILON CLOSURES ---\n");
+	*/
 
 	scc_ind = 0;
 	for (lbl=0; lbl < maxlbl; lbl++) {
 		unsigned int scc_ind0 = scc_ind;
 
+		/*
 		fprintf(stderr, "-- label %u ind0=%u\n", lbl, scc_ind0);
+		*/
 
 		for (; scc_ind < scc_offsets[lbl]; scc_ind++) {
 			unsigned int st;
@@ -855,7 +915,9 @@ build_epsilon_closures(struct epsilon_table *tbl, unsigned int *scc_states, unsi
 			st = scc_states[scc_ind];
 			state = tbl->states[st].st;
 
+			/*
 			fprintf(stderr, "  [st=%4u] lbl=%u\n", st, state->eps_scc);
+			*/
 
 			assert(lbl+1 == state->eps_scc);
 
@@ -1179,6 +1241,246 @@ rescan:
 	return NULL;
 }
 
+
+
+enum { NUM_LINEAR_PROBE = 8 };
+
+/* finds the first edge of src for a symbol.  if last != NULL, uses this as the
+ * iteration reference.  This is useful for searching for edges of
+ * already-sorted states.
+ */
+static const struct edge_pair *
+firstsymedge(const struct epsilon_table *m, unsigned char sym, unsigned int src, const struct edge_pair *last)
+{
+	const struct edge_pair *p, *st, *st0, *end;
+
+	st0 = (last != NULL) ? last : m->sym_edges[sym];
+	st = st0;
+	end = m->sym_edges[sym+1];
+
+	/* for short distance, just use linear probing */
+	if (end-st < NUM_LINEAR_PROBE) {
+		for (p=st; p < end; p++) {
+			if (p->src == src) {
+				return p;
+			}
+		}
+		return NULL;
+	}
+
+	/* binary search to find first edge for src, then
+	 * we walk backward to find the first edge of src.  This assumes that
+	 * most states have a small number of edges per symbol.
+	 * FIXME: revisit this with something better
+	 */
+	/* fprintf(stderr, "--binary search sym table %d for src=%u--\n",sym,src); */
+	while (st < end) {
+		p = st + (end-st)/2;
+
+		/*
+		fprintf(stderr, "st  = %4u %p (%4u,%4u)\n", (unsigned int)(st  - m->sym_edges[0]),(void *)st,st->src,st->dst);
+		fprintf(stderr, "end = %4u %p\n", (unsigned int)(end - m->sym_edges[0]),(void *)end);
+		fprintf(stderr, "p   = %4u %p (%4u,%4u)\n", (unsigned int)(p   - m->sym_edges[0]),(void *)p  ,p  ->src,p  ->dst);
+		*/
+
+		if (p->src == src) {
+			break;
+		} else if (src < p->src) {
+			end = p;
+		} else { /* p->src > src */
+			st = p+1;
+		}
+	}
+
+	/*
+	fprintf(stderr, "---\n");
+	fprintf(stderr, "p   = %4u %p (%4u,%4u)\n", (unsigned int)(p   - m->sym_edges[0]),(void *)p  ,p  ->src,p  ->dst);
+	*/
+
+	if (p->src != src) {
+		return NULL;
+	}
+
+	/* otherwise walk backwards */
+	for (;;) {
+		if (p==st0) {
+			break;
+		}
+
+		p--;
+		if (p->src != src) {
+			return p+1;
+		}
+	}
+
+	return p;
+}
+
+static void findedgesout(struct edge_bmap *edgeset, const struct epsilon_table *tbl, struct state_set *states)
+{
+	const struct fsm_state *s;
+	struct state_iter it;
+
+	/* find all edges for states in 'set' */
+	edge_bmap_zero(edgeset);
+	for (s = state_set_first(states,&it); s != NULL; s = state_set_next(&it)) {
+		struct epsilon_state *sinfo = s->tmp.eps;  /* FIXME: hack */
+		assert(sinfo - &tbl->states[0] >= 0);
+		assert(sinfo - &tbl->states[0] < (ptrdiff_t)tbl->nstates);
+
+		edge_bmap_or_eq(edgeset, &sinfo->edges);
+	}
+}
+
+static int
+gatherdests(struct epsilon_table *tbl, struct state_set *set, int sym)
+{
+	const struct fsm_state *s;
+	struct state_iter it;
+	const struct edge_pair *edge, *maxedge;
+
+	edge = NULL;
+	maxedge = tbl->sym_edges[sym+1];
+
+	for (s = state_set_first(set,&it); s != NULL; s = state_set_next(&it)) {
+		struct epsilon_state *sinfo = s->tmp.eps;
+		long src;
+
+		src = sinfo - &tbl->states[0];
+		assert(src >= 0);
+		assert(src < (long)tbl->nstates);
+
+		/* fast exit if the state doesn't have this edge ...  */
+		if (!edge_bmap_test(&sinfo->edges, sym)) {
+			continue;
+		}
+
+		/* we're iterating through states in sorted
+		 * order, look for first edge of this state, add
+		 * all dest states, use last edges of this state
+		 * as a marker for next
+		 */
+
+		edge = firstsymedge(tbl, sym, src, edge);
+		assert(edge != NULL);
+		assert(edge->src == src);
+		assert(edge == tbl->sym_edges[sym] || (edge-1)->src != src);
+
+		for (; edge < maxedge && edge->src == src; edge++) {
+			unsigned int dst;
+
+			dst = edge->dst;
+
+			/* fprintf(stderr, "[e] %3ld --[%3d (%c)]-- %3u\n", src, sym, isprint(sym)?sym:' ', dst); */
+
+			/* add edges: test if edge dst is in the set (via
+			 * hashset).  if not, add it to the list.
+			 */
+			if (uintset_contains(&tbl->edgedests, dst)) {
+				continue;
+			}
+
+			if (!uintset_add(&tbl->edgedests, dst)) {
+				goto error;
+			}
+
+			if (!state_array_add(&tbl->currdests, tbl->states[dst].st)) {
+				goto error;
+			}
+		}
+	}
+
+	return 0;
+
+error:
+	return -1;
+}
+
+static int
+buildmappingedges(struct fsm *dfa, const struct fsm *nfa, struct mapping *curr, struct mapping_set *mappings, struct epsilon_table *tbl)
+{
+	struct edge_bmap edgeset;
+	struct edge_bmap_iter it;
+	int sym;
+
+	/* find all edges for states in 'set' */
+	findedgesout(&edgeset, tbl, curr->closure);
+
+	for (sym = edge_bmap_first(&edgeset, &it); sym >= 0; sym = edge_bmap_next(&edgeset,&it)) {
+		struct state_set *dests;
+		struct fsm_state *new;
+		struct fsm_edge *e;
+
+		uintset_clear(&tbl->edgedests);
+		tbl->currdests.len = 0;
+
+		if (gatherdests(tbl, curr->closure, sym) < 0) {
+			goto error;
+		}
+
+
+		/**** NEED TO RESOLVE
+		 *
+		 * We have some overlapping functionality here.  mapping_set
+		 * maps state_sets to new fsm_states in the dfa.
+		 *
+		 * It's inconvenient, though, because we have to create and
+		 * destroy a state_set, possibly creating unnecessary churn.
+		 * Ideally we'd just use the unsigned int indices to check if a
+		 * set of states has been mapped.  Or allow a search on a
+		 * temporary state_set or temporary sorted state_array.
+		 *
+		 * We could possibly hack this into mapping set.
+		 *
+		 */
+
+		/* make a state_set from the currdests temp list */
+		{
+			struct state_array destlist;
+			if (state_array_copy(&destlist,&tbl->currdests) == NULL) {
+				goto error;
+			}
+
+			dests = state_set_create_from_array(destlist.states,destlist.len);
+
+			{
+				struct fsm_state *prev, *s;
+				struct state_iter siter;
+				for (prev=NULL,s=state_set_first(dests,&siter); s != NULL; prev=s, s=state_set_next(&siter)) {
+					if (prev != NULL) {
+						assert(prev < s);
+					}
+				}
+			}
+
+			if (dests == NULL) {
+				free(destlist.states);
+				goto error;
+			}
+		}
+
+		new = set_closure(nfa, tbl, mappings, dfa, dests);
+		state_set_free(dests);  /* XXX - can we eliminate this temporary allocation? */
+		if (new == NULL) {
+			goto error;
+		}
+
+		e = fsm_addedge_literal(dfa, curr->dfastate, new, sym);
+	}
+
+	return 0;
+
+error:
+	return -1;
+}
+
+
+
+
+
+
+
+
 /*
  * List all states within a set which are reachable via non-epsilon
  * transitions (that is, have a label associated with them).
@@ -1328,7 +1630,7 @@ carryend(struct state_set *set, struct fsm *fsm, struct fsm_state *state)
  * renumbering states as a side-effect of constructing the new FSM).
  */
 static struct fsm *
-determinise(struct fsm *nfa,
+origdeterminise(struct fsm *nfa,
 	struct fsm_determinise_cache *dcache)
 {
 	static const struct mapping_iter_save sv_init;
@@ -1545,6 +1847,186 @@ error:
 	return NULL;
 }
 
+/*
+ * Convert an NFA to a DFA. This is the guts of conversion; it is an
+ * implementation of the well-known multiple-states method. This produces a DFA
+ * which simulates the given NFA by collating all reachable NFA states
+ * simultaneously. The basic principle behind this is a closure on epsilon
+ * transitions, which produces the set of all reachable NFA states without
+ * consuming any input. This set of NFA states becomes a single state in the
+ * newly-created DFA.
+ *
+ * For a more in-depth discussion, see (for example) chapter 2 of Appel's
+ * "Modern compiler implementation", which has a detailed description of this
+ * process.
+ *
+ * As all DFA are NFA; for a DFA this has no semantic effect (other than
+ * renumbering states as a side-effect of constructing the new FSM).
+ */
+static struct fsm *
+determinise(struct fsm *nfa,
+	struct fsm_determinise_cache *dcache)
+{
+	const static struct mapping_iter_save sv_init;
+	const static struct epsilon_table epstbl_init;
+
+	unsigned int *scc_states = NULL;
+	unsigned int *scc_offs   = NULL;
+	unsigned int maxlbl = 0;
+
+	struct epsilon_table epstbl = epstbl_init;
+
+	struct mapping *curr;
+	struct mapping_set *mappings;
+	struct mapping_iter it;
+	struct trans_set *trans;
+	struct fsm *dfa;
+
+	struct mapping_iter_save sv;
+
+	assert(nfa != NULL);
+	assert(nfa->opt != NULL);
+	assert(dcache != NULL);
+
+	dfa = fsm_new(nfa->opt);
+	if (dfa == NULL) {
+		return NULL;
+	}
+
+#ifdef DEBUG_TODFA
+	dfa->nfa = nfa;
+#endif
+
+	if (nfa->endcount == 0) {
+		dfa->start = fsm_addstate(dfa);
+		if (dfa->start == NULL) {
+			fsm_free(dfa);
+			return NULL;
+		}
+
+		return dfa;
+	}
+
+	if (dcache->mappings == NULL) {
+		dcache->mappings = mapping_set_create(hash_mapping, cmp_mapping);
+	}
+	mappings = dcache->mappings;
+	assert(mappings != NULL);
+
+	if (dcache->trans == NULL) {
+		dcache->trans = trans_set_create(cmp_trans);
+	}
+	trans = dcache->trans;
+	assert(trans != NULL);
+
+	if (!epsilon_table_initialize(&epstbl,nfa)) {
+		goto error;
+	}
+
+	if (find_strongly_connected_components(&epstbl, &scc_states, &scc_offs, &maxlbl) < 0) {
+		goto error;
+	}
+
+	if (build_epsilon_closures(&epstbl,scc_states,scc_offs,maxlbl) < 0) {
+		goto error;
+	}
+
+	/*
+	 * The epsilon closure of the NFA's start state is the DFA's start state.
+	 * This is not yet "done"; it starts off the loop below.
+	 */
+	{
+		const struct fsm_state *nfastart;
+		struct fsm_state *dfastart;
+		int includeself = 1;
+
+		nfastart = fsm_getstart(nfa);
+
+		/*
+		 * As a special case for Brzozowski's algorithm, fsm_determinise() is
+		 * expected to produce a minimal DFA for its invocation after the second
+		 * reversal. Since we do not provide multiple start states, fsm_reverse()
+		 * may introduce a new start state which transitions to several states.
+		 * This is the situation we detect here.
+		 *
+		 * This fabricated start state is then excluded from its epsilon closure,
+		 * so that the closures for its destination states are found equivalent,
+		 * because they also do not include the start state.
+		 *
+		 * If you pass an equivalent NFA where this is not the case (for example,
+		 * with the start state containing an epsilon edge to itself), we regard
+		 * this as any other DFA, and minimal output is not guaranteed.
+		 */
+		if (!fsm_isend(nfa, nfastart)
+			&& fsm_epsilonsonly(nfa, nfastart) && !fsm_hasincoming(nfa, nfastart))
+		{
+			includeself = 0;
+		}
+
+		dfastart = state_closure(nfa, &epstbl, mappings, dfa, nfastart, includeself);
+		if (dfastart == NULL) {
+			/* TODO: error */
+			goto error;
+		}
+
+		fsm_setstart(dfa, dfastart);
+	}
+
+	/*
+	 * While there are still DFA states remaining to be "done", process each.
+	 */
+	sv = sv_init;
+	for (curr = mapping_set_first(mappings, &it); (curr = nextnotdone(mappings, &sv)) != NULL; curr->done = 1) {
+
+		if (buildmappingedges(dfa, nfa, curr, mappings, &epstbl) < 0) {
+			goto error;
+		}
+
+#ifdef DEBUG_TODFA
+		{
+			struct state_set *q;
+
+			for (q = state_set_first(curr->closure, &jt); q != NULL; q = state_set_next(&jt)) {
+				if (!set_add(&curr->dfastate->nfasl, q)) {
+					goto error;
+				}
+			}
+		}
+#endif
+
+		/*
+		 * The current DFA state is an end state if any of its associated NFA
+		 * states are end states.
+		 */
+		carryend(curr->closure, dfa, curr->dfastate);
+
+		/*
+		 * Carry through opaque values, if present. This isn't anything to do
+		 * with the DFA conversion; it's meaningful only to the caller.
+		 */
+		fsm_carryopaque(dfa, curr->closure, dfa, curr->dfastate);
+	}
+
+	clear_mappings(dfa, mappings);
+	free(scc_states);
+	free(scc_offs);
+	epsilon_table_finalize(nfa,&epstbl);
+
+	/* TODO: can assert a whole bunch of things about the dfa, here */
+	assert(fsm_all(dfa, fsm_isdfa));
+
+	return dfa;
+
+error:
+	free(scc_states);
+	free(scc_offs);
+	epsilon_table_finalize(nfa,&epstbl);
+	clear_mappings(dfa, mappings);
+	fsm_free(dfa);
+
+	return NULL;
+}
+
 int
 fsm_determinise_cache(struct fsm *fsm,
 	struct fsm_determinise_cache **dcache)
@@ -1574,6 +2056,9 @@ fsm_determinise_cache(struct fsm *fsm,
 			return 0;
 		}
 	}
+
+	/* silences unused warning */
+	(void)origdeterminise;
 
 	dfa = determinise(fsm, *dcache);
 	if (dfa == NULL) {
