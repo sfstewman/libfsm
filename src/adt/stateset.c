@@ -186,4 +186,3 @@ state_set_cmp(const struct state_set *a, const struct state_set *b)
 	return set_cmp(a->set, b->set);
 }
 
-
