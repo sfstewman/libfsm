@@ -12,11 +12,11 @@ LDFLAGS += ../../build/lib/libfsm.a
 all: words
 
 words: main.o
-	$(CC) -o words $(CFLAGS) main.o $(LDFLAGS)
+	$(CC) -fsanitize=address -o words $(CFLAGS) main.o $(LDFLAGS)
 
 clean:
 	rm -f words main.o
 
 .c.o:
-	$(CC) -o $@ -c $< $(CFLAGS)
+	$(CC) -fsanitize=address -o $@ -c $< $(CFLAGS)
 
