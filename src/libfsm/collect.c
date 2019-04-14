@@ -83,10 +83,8 @@ cleanup:
 int
 sweep_states(struct fsm *fsm)
 {
-	struct fsm_state *prev = NULL;
-	struct fsm_state *s = fsm->sl;
-	struct fsm_state *next;
 	int swept = 0;
+	struct fsm_state **tail;
 
 	/* This doesn't use fsm_removestate because it would be modifying the
 	 * state graph while traversing it, and any state being removed here
@@ -96,25 +94,35 @@ sweep_states(struct fsm *fsm)
 	 * There may temporarily be other states in the graph with other
 	 * to it, because the states aren't topologically sorted, but
 	 * they'll be collected soon as well. */
-	while (s != NULL) {
-		next = s->next;
-		if (!s->reachable) {
-			assert(s != fsm->start);
+
+	for (tail = &fsm->sl; *tail != NULL;) {
+		struct fsm_state *tmp;
+
+		tmp = *tail;
+		if (tmp->reachable) {
+			/* reachable, advance tail to next state */
+			tail = &(*tail)->next;
+		} else {
+			/* unreachable state */
+
+			assert(*tail != fsm->start);
 
 			/* for endcount accounting */
-			fsm_setend(fsm, s, 0);
+			fsm_setend(fsm, tmp, 0);
 
-			/* unlink */
-			if (prev != NULL) { prev->next = next; }
-			if (s == *fsm->tail) { *fsm->tail = prev; }
-			edge_set_free(s->edges);
-			free(s);
+			/* remove *tail, don't advance tail */
+			*tail = tmp->next;         /* remove link */
+
+			/* clean up */
+			edge_set_free(tmp->edges); /* free edges  */
+			free(tmp);                 /* free state  */
+
 			swept++;
-		} else {
-			prev = s;
 		}
-		s = next;
 	}
+
+	fsm->tail = tail;
+
 	return swept;
 }
 
