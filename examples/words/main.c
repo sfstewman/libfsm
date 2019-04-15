@@ -30,6 +30,7 @@ int main(int argc, char *argv[]) {
 	void (*print)(FILE *, const struct fsm *);
 	unsigned long ms, mt;
 	int timing;
+	int pause;
 
 	opt.anonymous_states  = 1;
 	opt.consolidate_edges = 1;
@@ -37,11 +38,12 @@ int main(int argc, char *argv[]) {
 	dmf = NULL;
 	print = NULL;
 	timing = 0;
+	pause = 0;
 
 	{
 		int c;
 
-		while (c = getopt(argc, argv, "h" "dmct"), c != -1) {
+		while (c = getopt(argc, argv, "h" "P" "dmct"), c != -1) {
 			switch (c) {
 			case 'd': dmf = fsm_determinise; break;
 			case 'm': dmf = fsm_minimise;    break;
@@ -50,6 +52,10 @@ int main(int argc, char *argv[]) {
 
 			case 't':
 				timing = 1;
+				break;
+
+			case 'P':
+				pause = 1;
 				break;
 
 			case 'h':
@@ -123,6 +129,17 @@ int main(int argc, char *argv[]) {
 
 		ms += 1000 * (post.tv_sec - pre.tv_sec)
 		           + ((long) post.tv_nsec - (long) pre.tv_nsec) / 1000000;
+	}
+
+	if (pause) {
+		FILE *ttyf;
+		fprintf(stderr, "input done.  press <enter> to continue\n");
+		ttyf = fopen("/dev/tty", "r");
+		if (ttyf != NULL) {
+			fgets(s, sizeof s, ttyf);
+			fclose(ttyf);
+		}
+		fprintf(stderr, "continuing\n");
 	}
 
 	fsm_setstart(fsm, start);
