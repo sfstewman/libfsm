@@ -245,6 +245,7 @@ op_name(const char *name)
 		{ "min",         OP_MINIMISE    },
 		{ "minimise",    OP_MINIMISE    },
 		{ "trim",        OP_TRIM        },
+		{ "glushkovize", OP_GLUSHKOVIZE },
 
 		{ "cat",         OP_CONCAT      },
 		{ "concat",      OP_CONCAT      },
