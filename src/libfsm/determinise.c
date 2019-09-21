@@ -138,7 +138,7 @@ addtomappings(struct mapping_set *mappings, struct fsm *dfa, struct state_set *c
  * Create the DFA state if neccessary.
  */
 static struct fsm_state *
-state_closure(struct mapping_set *mappings, struct fsm *dfa, const struct fsm_state *nfastate,
+state_closure(struct mapping_set *mappings, struct fsm *dfa, struct fsm_state *nfastate,
 	int includeself)
 {
 	struct mapping *m;
@@ -153,7 +153,7 @@ state_closure(struct mapping_set *mappings, struct fsm *dfa, const struct fsm_st
 		return NULL;
 	}
 
-	if (epsilon_closure(nfastate, ec) == NULL) {
+	if (epsilon_closure_memoize(nfastate, ec) == NULL) {
 		state_set_free(ec);
 		return NULL;
 	}
@@ -195,7 +195,7 @@ set_closure(struct mapping_set *mappings, struct fsm *dfa, struct state_array *s
 	}
 
 	for (i = 0; i < set->len; i++) {
-		if (epsilon_closure(set->states[i], ec) == NULL) {
+		if (epsilon_closure_memoize(set->states[i], ec) == NULL) {
 			state_set_free(ec);
 			return NULL;
 		}
@@ -529,6 +529,19 @@ finish:
 	return ret;
 }
 
+static void
+clear_memoized_closures(struct fsm *fsm)
+{
+	struct fsm_state *st;
+
+	for (st = fsm->sl; st != NULL; st = st->next) {
+		if (st->tmp.memoized_closure != NULL) {
+			state_set_free(st->tmp.memoized_closure);
+		}
+
+		st->tmp.memoized_closure = NULL;
+	}
+}
 
 /*
  * Convert an NFA to a DFA. This is the guts of conversion; it is an
@@ -587,12 +600,14 @@ nfa_transform(struct fsm *nfa,
 	}
 	mappings = dcache->mappings;
 
+	fsm_clear_tmp(nfa);
+
 	/*
 	 * The epsilon closure of the NFA's start state is the DFA's start state.
 	 * This is not yet "done"; it starts off the loop below.
 	 */
 	{
-		const struct fsm_state *nfastart;
+		struct fsm_state *nfastart;
 		struct fsm_state *dfastart;
 		int includeself = 1;
 
@@ -656,6 +671,7 @@ nfa_transform(struct fsm *nfa,
 		fsm_carryopaque(dfa, curr->closure, dfa, curr->dfastate);
 	}
 
+	clear_memoized_closures(nfa);
 	clear_mappings(dfa, mappings);
 
 	/* TODO: can assert a whole bunch of things about the dfa, here */
@@ -665,7 +681,7 @@ nfa_transform(struct fsm *nfa,
 	return dfa;
 
 error:
-
+	clear_memoized_closures(nfa);
 	clear_mappings(dfa, mappings);
 	fsm_free(dfa);
 
