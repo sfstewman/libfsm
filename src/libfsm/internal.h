@@ -60,6 +60,8 @@ struct fsm_state {
 		struct fsm_state *equiv;
 		/* tracks which states have been visited in walk2 */
 		struct fsm_state *visited;
+		/* memoized epsilon closure */
+		struct state_set *memoized_closure;
 	} tmp;
 
 	struct fsm_state *next;
@@ -93,6 +95,9 @@ fsm_state_clear_tmp(struct fsm_state *state);
 
 struct state_set *
 epsilon_closure(const struct fsm_state *state, struct state_set *closure);
+
+struct state_set *
+epsilon_closure_memoize(struct fsm_state *state, struct state_set *closure);
 
 /*
  * Internal free function that invokes free(3) by default, or a user-provided
