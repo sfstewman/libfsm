@@ -20,6 +20,7 @@ struct set {
 	size_t i;
 	size_t n;
 	int (*cmp)(const void *, const void *);
+	int (*bulkcmp)(const void **, const void **);
 };
 
 /*
@@ -60,14 +61,28 @@ set_cmpval(const void *a, const void *b)
 	return (a > b) - (a < b);
 }
 
+static int
+set_bulkcmpval(const void **a, const void **b)
+{
+	assert(a != NULL);
+	assert(b != NULL);
+
+	return set_cmpval(*a, *b);
+}
+
 struct set *
 set_create(const struct fsm_alloc *a,
-	int (*cmp)(const void *a, const void *b))
+	int (*cmp)(const void *a, const void *b),
+	int (*bulkcmp)(const void **a, const void **b))
 {
 	struct set *set;
 
 	if (cmp == NULL) {
 		cmp = set_cmpval;
+	}
+
+	if (bulkcmp == NULL) {
+		bulkcmp = set_bulkcmpval;
 	}
 
 	set = f_malloc(a, sizeof *set);
@@ -84,21 +99,15 @@ set_create(const struct fsm_alloc *a,
 	set->i = 0;
 	set->n = SET_INITIAL;
 	set->cmp = cmp;
+	set->bulkcmp = bulkcmp;
 
 	return set;
 }
 
-static int
-set_bulkcmpval(const void *a, const void *b)
-{
-	const void *pa = ((void **)a)[0], *pb = ((void **)b)[0];
-
-	return (pa > pb) - (pa < pb);
-}
-
 struct set *
 set_create_singleton(const struct fsm_alloc *a,
-	int (*cmp)(const void *a, const void *b), void *item)
+	int (*cmp)(const void *a, const void *b),
+	int (*bulkcmp)(const void **a, const void **b), void *item)
 {
 	struct set *s;
 
@@ -117,6 +126,7 @@ set_create_singleton(const struct fsm_alloc *a,
 	s->a[0] = item;
 	s->i = s->n = 1;
 	s->cmp = (cmp != NULL) ? cmp : set_cmpval;
+	s->bulkcmp = (bulkcmp != NULL) ? bulkcmp : set_bulkcmpval;
 
 	return s;
 }
@@ -197,90 +207,6 @@ set_add(struct set *set, void *item)
 
 #define BULK_ADD_THRESH 1
 
-static
-void set_quicksort(void **items, size_t n, int (*cmp)(const void *a, const void *b))
-{
-	/* We can't use libc's qsort here because it passes const void **, so
-	 * this is a quick recursive implementation of a quicksort with
-	 * median-of-3 pivot.
-	 *
-	 * NB: may also want to implement introsort or something with better
-	 * worst-time behavior
-	 */
-
-	size_t i,j, mid;
-	void *pivot;
-	int c;
-#define SWAP(i,j) do { void *tmp = items[(i)]; items[(i)] = items[(j)]; items[(j)] = tmp; } while(0)
-
-	if (n < 2) {
-		return;
-	}
-
-	c = cmp(items[0], items[n-1]);
-	if (c > 0) {
-		SWAP(0,n-1);
-	}
-
-	if (n == 2) {
-		/* now correctly sorted, so fast exit! */
-		return;
-	}
-
-	/* find the pivot with median-of-3: median(item[0], item[n/2],
-	 * item[n-1]).  At the end, the pivot should be placed at item[n-1] to
-	 * keep it out of the way...
-	 */
-
-	mid = n/2;
-	c = cmp(items[0],items[mid]);
-	if (c > 0) {
-		/* items[mid] < items[0] < items[n-1],
-		 * so items[0] is the pivot.
-		 */
-		SWAP(0,n-1);  /* pivot is now at n-1 */
-	} else {
-		/* items[0] <= items[mid] and items[0] <= items[n-1]
-		 *
-		 * need ordering between items[mid] and items[n-1]
-		 */
-		c = cmp(items[mid],items[n-1]);
-		if (c <= 0) {
-			/* items[0] <= items[mid] <= items[n-1], so mid
-			 * holds the pivot.
-			 */
-			SWAP(mid,n-1); /* pivot is now at n-1 */
-		} else {
-			/* items[0] <= items[n-1] < items[mid], so pivot
-			 * is already at n-1
-			 */
-
-			/* nop */
-		}
-	}
-
-	pivot = items[n-1];
-
-	for (i=0,j=n-2; i <= j;) {
-		c = cmp(items[i],pivot);
-		if (c > 0) {
-			SWAP(i,j);
-			j--;
-		}
-		else {
-			i++;
-		}
-	}
-
-	/* now items[i] points to the first item > pivot */
-	SWAP(i,n-1);
-
-	set_quicksort(&items[0], i, cmp); /* sort elements <= pivot */
-	set_quicksort(&items[i+1], n-(i+1), cmp); /* sort elements > pivot */
-
-#undef SWAP
-}
-
 void *
 set_add_bulk(struct set *set, void **items, size_t n)
 {
@@ -315,7 +241,7 @@ set_add_bulk(struct set *set, void **items, size_t n)
 
 	/* Current items in set items are already sorted, sort new items */
 	memcpy(&set->a[set->i], &items[0], n * sizeof items[0]);
-	set_quicksort(&set->a[0], set->i+n, set->cmp);
+	qsort(&set->a[0], set->i+n, sizeof set->a[0], (int (*)(const void *, const void *))set->bulkcmp);
 
 	/* remove any duplicates */
 	{

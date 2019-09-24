@@ -12,11 +12,13 @@
 
 struct tuple_set *
 tuple_set_create(const struct fsm_alloc *a,
-	int (*cmp)(const void *, const void *))
+	int (*cmp)(const void *, const void *),
+	int (*bulkcmp)(const void **a, const void **b))
+
 {
 	assert(cmp != NULL);
 
-	return (struct tuple_set *) set_create(a, cmp);
+	return (struct tuple_set *) set_create(a, cmp, bulkcmp);
 }
 
 void

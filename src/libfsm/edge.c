@@ -35,6 +35,14 @@ fsm_state_cmpedges(const void *a, const void *b)
 	return (ea->symbol > eb->symbol) - (ea->symbol < eb->symbol);
 }
 
+static int
+fsm_state_bulkcmpedges(const void **a, const void **b)
+{
+	assert(a != NULL);
+	assert(b != NULL);
+	return fsm_state_cmpedges(*a, *b);
+}
+
 int
 fsm_addedge_epsilon(struct fsm *fsm,
 	struct fsm_state *from, struct fsm_state *to)
@@ -90,7 +98,7 @@ fsm_addedge_literal(struct fsm *fsm,
 	assert(to != NULL);
 
 	if (from->edges == NULL) {
-		from->edges = edge_set_create(fsm->opt->alloc, fsm_state_cmpedges);
+		from->edges = edge_set_create(fsm->opt->alloc, fsm_state_cmpedges, fsm_state_bulkcmpedges);
 		if (from->edges == NULL) {
 			return 0;
 		}
@@ -136,7 +144,7 @@ fsm_addedge_bulk(struct fsm *fsm, struct fsm_state *from, struct fsm_state **to,
 	}
 
 	if (from->edges == NULL) {
-		from->edges = edge_set_create(fsm->opt->alloc, fsm_state_cmpedges);
+		from->edges = edge_set_create(fsm->opt->alloc, fsm_state_cmpedges, fsm_state_bulkcmpedges);
 		if (from->edges == NULL) {
 			return 0;
 		}

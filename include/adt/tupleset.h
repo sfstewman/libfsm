@@ -18,7 +18,8 @@ struct tuple_iter {
 
 struct tuple_set *
 tuple_set_create(const struct fsm_alloc *a,
-	int (*cmp)(const void *, const void *));
+	int (*cmp)(const void *, const void *),
+	int (*bulkcmp)(const void **a, const void **b));
 
 void
 tuple_set_free(struct tuple_set *set);

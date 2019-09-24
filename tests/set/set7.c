@@ -15,6 +15,10 @@ int cmp_int(const void *a_, const void *b_) {
 	else            return 0;
 }
 
+int bulkcmp_int(const void **a_, const void **b_) {
+	return cmp_int(*a_, *b_);
+}
+
 /* tests bulk addition */
 int main(void) {
 	static int items1[3] = {1, 2, 3};
@@ -25,7 +29,7 @@ int main(void) {
 
 	static int all_items[] = { -12, -10, -2, -1, 0, 1, 2, 3, 5, 6, 7, 9, 10, 15 };
 
-	struct set *s = set_create(NULL, cmp_int);
+	struct set *s = set_create(NULL, cmp_int, bulkcmp_int);
 	void *ptrs[5] = { &items2[0], &items2[1], &items2[2] };
 	size_t i;
 

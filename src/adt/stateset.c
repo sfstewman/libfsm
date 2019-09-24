@@ -14,14 +14,14 @@
 struct state_set *
 state_set_create(const struct fsm_alloc *a)
 {
-	return (struct state_set *) set_create(a, NULL);
+	return (struct state_set *) set_create(a, NULL, NULL);
 }
 
 struct state_set *
 state_set_create_singleton(const struct fsm_alloc *a,
 	struct fsm_state *state)
 {
-	return (struct state_set *) set_create_singleton(a, NULL, state);
+	return (struct state_set *) set_create_singleton(a, NULL, NULL, state);
 }
 
 void

@@ -15,6 +15,10 @@ int cmp_int(const void *a_, const void *b_) {
 	else            return 0;
 }
 
+int bulkcmp_int(const void **a_, const void **b_) {
+	return cmp_int(*a_, *b_);
+}
+
 int *next_int(void) {
 	static int n = 0;
 	int *p = malloc(sizeof *p);
@@ -24,7 +28,7 @@ int *next_int(void) {
 }
 
 int main(void) {
-	struct set *s = set_create(NULL, cmp_int);
+	struct set *s = set_create(NULL, cmp_int, bulkcmp_int);
 	struct set_iter iter;
 	size_t i;
 	int *p;
