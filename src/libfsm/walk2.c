@@ -38,9 +38,9 @@ struct fsm_walk2_tuple {
 
 /* comparison of fsm_walk2_tuples for the (ordered) set */
 static int
-cmp_walk2_tuple(const void *a, const void *b)
+cmp_walk2_tuple(const void **a, const void **b)
 {
-	const struct fsm_walk2_tuple *pa = a, *pb = b;
+	const struct fsm_walk2_tuple *pa = *a, *pb = *b;
 	ptrdiff_t delta;
 
 	/* XXX: do we need to specially handle NULLs? */

@@ -19,15 +19,15 @@
 #include "internal.h"
 
 static int
-fsm_state_cmpedges(const void *a, const void *b)
+fsm_state_cmpedges(const void **a, const void **b)
 {
 	const struct fsm_edge *ea, *eb;
 
 	assert(a != NULL);
 	assert(b != NULL);
 
-	ea = a;
-	eb = b;
+	ea = *a;
+	eb = *b;
 
 	/* N.B. various edge iterations rely on the ordering of edges to be in
 	 * ascending order.

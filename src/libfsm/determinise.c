@@ -272,7 +272,7 @@ carryend(struct state_set *set, struct fsm *fsm, struct fsm_state *state)
 }
 
 static int
-cmp_single_state(const void *a, const void *b)
+hashcmp_single_state(const void *a, const void *b)
 {
 	const struct fsm_state *ea = a, *eb = b;
 	return (ea > eb) - (ea < eb);
@@ -343,7 +343,7 @@ glushkov_buildtransitions(const struct fsm *fsm, struct fsm *dfa, struct mapping
 			if (outsets[sym] == NULL && outedges[sym].len + state_set_count(e->sl) > 1) {
 				size_t i;
 
-				outsets[sym] = hashset_create(fsm->opt->alloc, hash_single_state, cmp_single_state);
+				outsets[sym] = hashset_create(fsm->opt->alloc, hash_single_state, hashcmp_single_state);
 				if (outsets[sym] == NULL) {
 					goto finish;
 				}
@@ -462,7 +462,7 @@ dfa_buildtransitions(const struct fsm *fsm, struct fsm *dfa, struct mapping_set 
 				if (outsets[sym] == NULL) {
 					size_t i;
 
-					outsets[sym] = hashset_create(fsm->opt->alloc, hash_single_state, cmp_single_state);
+					outsets[sym] = hashset_create(fsm->opt->alloc, hash_single_state, hashcmp_single_state);
 					if (outsets[sym] == NULL) {
 						goto finish;
 					}

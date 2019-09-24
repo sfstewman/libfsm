@@ -12,7 +12,7 @@
 
 struct tuple_set *
 tuple_set_create(const struct fsm_alloc *a,
-	int (*cmp)(const void *, const void *))
+	int (*cmp)(const void **, const void **))
 {
 	assert(cmp != NULL);
 

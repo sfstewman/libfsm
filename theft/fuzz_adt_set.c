@@ -25,8 +25,9 @@ static bool op_clear(struct model *m, struct set *set);
 static bool postcondition(struct model *m, struct set *set);
 
 static int
-cmp_item(const void *pa, const void *pb)
+cmp_item(const void **ppa, const void **ppb)
 {
+	const void *pa = *ppa, *pb = *ppb;
 	uintptr_t a = (uintptr_t) pa;
 	uintptr_t b = (uintptr_t) pb;
 

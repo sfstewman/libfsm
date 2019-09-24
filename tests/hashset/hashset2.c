@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include <adt/hashset.h>
 
-int cmp_int(const void *a_, const void *b_) {
+int hashcmp_int(const void *a_, const void *b_) {
 	int a = *(const int *)a_, b = *(const int *)b_;
 	if (a > b)      return 1;
 	else if (a < b) return -1;
@@ -22,7 +22,7 @@ unsigned long hash_int(const void *a_)
 }
 
 int main(void) {
-	struct hashset *s = hashset_create(NULL, hash_int,cmp_int);
+	struct hashset *s = hashset_create(NULL, hash_int,hashcmp_int);
 	int a = 1;
 	assert(hashset_add(s, &a));
 	assert(hashset_add(s, &a));

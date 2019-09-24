@@ -17,11 +17,11 @@ struct set_iter {
 
 struct set *
 set_create(const struct fsm_alloc *a,
-	int (*cmp)(const void *a, const void *b));
+	int (*cmp)(const void **a, const void **b));
 
 struct set *
 set_create_singleton(const struct fsm_alloc *a,
-	int (*cmp)(const void *a, const void *b), void *item);
+	int (*cmp)(const void **a, const void **b), void *item);
 
 struct set *
 set_copy(const struct set *set);

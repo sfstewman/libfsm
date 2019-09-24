@@ -19,7 +19,7 @@ struct set {
 	void **a;
 	size_t i;
 	size_t n;
-	int (*cmp)(const void *, const void *);
+	int (*cmp)(const void **, const void **);
 };
 
 /*
@@ -40,8 +40,11 @@ set_search(const struct set *set, const void *item)
 
 	while (start < end) {
 		int r;
+		const void *midp;
+
 		mid = start + (end - start) / 2;
-		r = set->cmp(item, set->a[mid]);
+		midp = set->a[mid];
+		r = set->cmp(&item, &midp);
 		if (r < 0) {
 			end = mid;
 		} else if (r > 0) {
@@ -55,14 +58,15 @@ set_search(const struct set *set, const void *item)
 }
 
 static int
-set_cmpval(const void *a, const void *b)
+set_cmpval(const void **ap, const void **bp)
 {
+	const void *a = *ap, *b = *bp;
 	return (a > b) - (a < b);
 }
 
 struct set *
 set_create(const struct fsm_alloc *a,
-	int (*cmp)(const void *a, const void *b))
+	int (*cmp)(const void **a, const void **b))
 {
 	struct set *set;
 
@@ -98,7 +102,7 @@ set_bulkcmpval(const void *a, const void *b)
 
 struct set *
 set_create_singleton(const struct fsm_alloc *a,
-	int (*cmp)(const void *a, const void *b), void *item)
+	int (*cmp)(const void **a, const void **b), void *item)
 {
 	struct set *s;
 
@@ -158,13 +162,18 @@ set_add(struct set *set, void *item)
 	 * If the item already exists in the set, return success.
 	 */
 	if (!set_empty(set)) {
+		const void *a = item;
+		const void *b = set->a[i];
 		i = set_search(set, item);
-		if (set->cmp(item, set->a[i]) == 0) {
+		if (set->cmp(&a, &b) == 0) {
 			return item;
 		}
 	}
 
 	if (set->i) {
+		const void *a = item;
+		const void *b = set->a[i];
+
 		/* We're at capacity. Get more */
 		if (set->i == set->n) {
 			void **new;
@@ -178,7 +187,7 @@ set_add(struct set *set, void *item)
 			set->n *= 2;
 		}
 
-		if (set->cmp(item, set->a[i]) > 0) {
+		if (set->cmp(&a, &b) > 0) {
 			i++;
 		}
 
@@ -196,90 +205,6 @@ set_add(struct set *set, void *item)
 }
 
 #define BULK_ADD_THRESH 1
-
-static
-void set_quicksort(void **items, size_t n, int (*cmp)(const void *a, const void *b))
-{
-	/* We can't use libc's qsort here because it passes const void **, so
-	 * this is a quick recursive implementation of a quicksort with
-	 * median-of-3 pivot.
-	 *
-	 * NB: may also want to implement introsort or something with better
-	 * worst-time behavior
-	 */
-
-	size_t i,j, mid;
-	void *pivot;
-	int c;
-#define SWAP(i,j) do { void *tmp = items[(i)]; items[(i)] = items[(j)]; items[(j)] = tmp; } while(0)
-
-	if (n < 2) {
-		return;
-	}
-
-	c = cmp(items[0], items[n-1]);
-	if (c > 0) {
-		SWAP(0,n-1);
-	}
-
-	if (n == 2) {
-		/* now correctly sorted, so fast exit! */
-		return;
-	}
-
-	/* find the pivot with median-of-3: median(item[0], item[n/2],
-	 * item[n-1]).  At the end, the pivot should be placed at item[n-1] to
-	 * keep it out of the way...
-	 */
-
-	mid = n/2;
-	c = cmp(items[0],items[mid]);
-	if (c > 0) {
-		/* items[mid] < items[0] < items[n-1],
-		 * so items[0] is the pivot.
-		 */
-		SWAP(0,n-1);  /* pivot is now at n-1 */
-	} else {
-		/* items[0] <= items[mid] and items[0] <= items[n-1]
-		 *
-		 * need ordering between items[mid] and items[n-1]
-		 */
-		c = cmp(items[mid],items[n-1]);
-		if (c <= 0) {
-			/* items[0] <= items[mid] <= items[n-1], so mid
-			 * holds the pivot.
-			 */
-			SWAP(mid,n-1); /* pivot is now at n-1 */
-		} else {
-			/* items[0] <= items[n-1] < items[mid], so pivot
-			 * is already at n-1
-			 */
-
-			/* nop */
-		}
-	}
-
-	pivot = items[n-1];
-
-	for (i=0,j=n-2; i <= j;) {
-		c = cmp(items[i],pivot);
-		if (c > 0) {
-			SWAP(i,j);
-			j--;
-		}
-		else {
-			i++;
-		}
-	}
-
-	/* now items[i] points to the first item > pivot */
-	SWAP(i,n-1);
-
-	set_quicksort(&items[0], i, cmp); /* sort elements <= pivot */
-	set_quicksort(&items[i+1], n-(i+1), cmp); /* sort elements > pivot */
-
-#undef SWAP
-}
 
 void *
 set_add_bulk(struct set *set, void **items, size_t n)
@@ -315,14 +240,16 @@ set_add_bulk(struct set *set, void **items, size_t n)
 
 	/* Current items in set items are already sorted, sort new items */
 	memcpy(&set->a[set->i], &items[0], n * sizeof items[0]);
-	set_quicksort(&set->a[0], set->i+n, set->cmp);
+	qsort(&set->a[0], set->i+n, sizeof set->a[0], (int (*)(const void *, const void *))set->cmp);
 
 	/* remove any duplicates */
 	{
 		size_t i, curr = 1, max = set->i+n;
 		void **items = set->a;
 		for (i=1; i < max; i++) {
-			int cmp = set->cmp(items[i-1], items[i]);
+			const void *a = items[i-1];
+			const void *b = items[i];
+			int cmp = set->cmp(&a, &b);
 
 			assert(cmp <= 0);
 			assert(curr <= i);
@@ -342,6 +269,7 @@ void
 set_remove(struct set *set, const void *item)
 {
 	size_t i;
+	const void *a, *b;
 
 	assert(set != NULL);
 	assert(set->cmp != NULL);
@@ -352,7 +280,9 @@ set_remove(struct set *set, const void *item)
 	}
 
 	i = set_search(set, item);
-	if (set->cmp(item, set->a[i]) == 0) {
+	a = item;
+	b = set->a[i];
+	if (set->cmp(&a, &b) == 0) {
 		if (i < set->i) {
 			memmove(&set->a[i], &set->a[i + 1], (set->i - i - 1) * (sizeof *set->a));
 		}
@@ -395,6 +325,7 @@ void *
 set_contains(const struct set *set, const void *item)
 {
 	size_t i;
+	const void *a, *b;
 
 	assert(set != NULL);
 	assert(set->cmp != NULL);
@@ -405,7 +336,9 @@ set_contains(const struct set *set, const void *item)
 	}
 
 	i = set_search(set, item);
-	if (set->cmp(item, set->a[i]) == 0) {
+	a = item;
+	b = set->a[i];
+	if (set->cmp(&a, &b) == 0) {
 		return set->a[i];
 	}
 
@@ -473,6 +406,7 @@ set_firstafter(const struct set *set, struct set_iter *it, const void *item)
 {
 	size_t i;
 	int r;
+	const void *a, *b;
 
 	assert(set != NULL);
 	assert(set->cmp != NULL);
@@ -485,7 +419,9 @@ set_firstafter(const struct set *set, struct set_iter *it, const void *item)
 	}
 
 	i = set_search(set, item);
-	r = set->cmp(item, set->a[i]);
+	a = item;
+	b = set->a[i];
+	r = set->cmp(&a, &b);
 	assert(i <= set->i - 1);
 
 	if (r >= 0 && i == set->i - 1) {
