@@ -26,12 +26,14 @@
 #define SET_INITIAL 8
 #define BULK_ADD_THRESH 1
 
+/*
 struct state_set {
 	const struct fsm_alloc *alloc;
 	fsm_state_t *a;
 	size_t i;
 	size_t n;
 };
+*/
 
 static int
 state_set_cmpval(fsm_state_t a, fsm_state_t b)
@@ -309,35 +311,6 @@ state_set_reset(struct state_set *set, struct state_iter *it)
 {
 	it->i = 0;
 	it->set = set;
-}
-
-int
-state_set_next(struct state_iter *it, fsm_state_t *state)
-{
-	assert(it != NULL);
-	assert(state != NULL);
-
-	if (it->set == NULL) {
-		return 0;
-	}
-
-	if (it->i >= it->set->i) {
-		return 0;
-	}
-
-	*state = it->set->a[it->i];
-
-	it->i++;
-
-	return 1;
-}
-
-int
-state_set_hasnext(struct state_iter *it)
-{
-	assert(it != NULL);
-
-	return it->set && it->i + 1 < it->set->i;
 }
 
 const fsm_state_t *

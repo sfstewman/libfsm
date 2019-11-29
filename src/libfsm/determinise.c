@@ -148,7 +148,8 @@ static int
 state_closure(struct mapping_hashset *mappings, struct fsm *dfa,
 	const struct fsm *nfa, fsm_state_t nfastate,
 	int includeself,
-	fsm_state_t *dfastate)
+	fsm_state_t *dfastate,
+	struct epsilon_closure_table *ectbl)
 {
 	struct mapping *m;
 	struct state_set *ec;
@@ -164,7 +165,7 @@ state_closure(struct mapping_hashset *mappings, struct fsm *dfa,
 		return 0;
 	}
 
-	if (epsilon_closure(nfa, nfastate, ec) == NULL) {
+	if (epsilon_closure(nfa, nfastate, ec, ectbl) == NULL) {
 		state_set_free(ec);
 		return 0;
 	}
@@ -194,7 +195,7 @@ state_closure(struct mapping_hashset *mappings, struct fsm *dfa,
 static int
 set_closure(struct mapping_hashset *mappings, struct fsm *dfa,
 	const struct fsm *nfa, struct state_array *set,
-	fsm_state_t *dfastate)
+	fsm_state_t *dfastate, struct epsilon_closure_table *ectbl)
 {
 	struct state_set *ec;
 	struct mapping *m;
@@ -211,7 +212,7 @@ set_closure(struct mapping_hashset *mappings, struct fsm *dfa,
 	}
 
 	for (i = 0; i < set->len; i++) {
-		if (epsilon_closure(nfa, set->states[i], ec) == NULL) {
+		if (epsilon_closure(nfa, set->states[i], ec, ectbl) == NULL) {
 			state_set_free(ec);
 			return 0;
 		}
@@ -305,7 +306,7 @@ carryend(const struct fsm *src_fsm, const struct state_set *src_set,
  */
 static int
 glushkov_buildtransitions(const struct fsm *fsm, struct fsm *dfa,
-	struct mapping_hashset *mappings, struct mapping *curr)
+	struct mapping_hashset *mappings, struct mapping *curr, struct epsilon_closure_table *ectbl)
 {
 	struct state_iter it;
 	int sym, sym_min, sym_max;
@@ -370,7 +371,7 @@ glushkov_buildtransitions(const struct fsm *fsm, struct fsm *dfa,
 			for (state_set_reset(e->sl, &kt); state_set_next(&kt, &st); ) {
 				fsm_state_t st_cl;
 
-				if (!state_closure(mappings, dfa, fsm, st, 1, &st_cl)) {
+				if (!state_closure(mappings, dfa, fsm, st, 1, &st_cl, ectbl)) {
 					goto finish;
 				}
 
@@ -425,7 +426,7 @@ finish:
  */
 static int
 dfa_buildtransitions(const struct fsm *fsm, struct fsm *dfa,
-	struct mapping_hashset *mappings, struct mapping *curr)
+	struct mapping_hashset *mappings, struct mapping *curr, struct epsilon_closure_table *ectbl)
 {
 	struct state_iter it;
 	int sym, sym_min, sym_max;
@@ -512,7 +513,7 @@ dfa_buildtransitions(const struct fsm *fsm, struct fsm *dfa,
 			continue;
 		}
 
-		if (!set_closure(mappings, dfa, fsm, &outedges[sym], &new)) {
+		if (!set_closure(mappings, dfa, fsm, &outedges[sym], &new, ectbl)) {
 			goto finish;
 		}
 
@@ -560,11 +561,14 @@ nfa_transform(struct fsm *nfa,
 	struct fsm_determinise_cache *dcache, enum nfa_transform_op op)
 {
 	static const struct mapping_hashset_iter_save sv_init;
+	static const struct epsilon_closure_table ectbl_init;
 
 	struct mapping *curr;
 	struct mapping_hashset *mappings;
 	struct mapping_hashset_iter it;
 	struct fsm *dfa;
+
+	struct epsilon_closure_table ectbl = ectbl_init;
 
 	struct mapping_hashset_iter_save sv;
 
@@ -634,7 +638,7 @@ nfa_transform(struct fsm *nfa,
 			includeself = 0;
 		}
 
-		if (!state_closure(mappings, dfa, nfa, nfastart, includeself, &dfastart)) {
+		if (!state_closure(mappings, dfa, nfa, nfastart, includeself, &dfastart, &ectbl)) {
 			/* TODO: error */
 			goto error;
 		}
@@ -651,11 +655,11 @@ nfa_transform(struct fsm *nfa,
 		curr->done = 1)
 	{
 		if (op == NFA_XFORM_DETERMINISE) {
-			if (!dfa_buildtransitions(nfa, dfa, mappings, curr)) {
+			if (!dfa_buildtransitions(nfa, dfa, mappings, curr, &ectbl)) {
 				goto error;
 			}
 		} else if (op == NFA_XFORM_GLUSHKOVISE) {
-			if (!glushkov_buildtransitions(nfa, dfa, mappings, curr)) {
+			if (!glushkov_buildtransitions(nfa, dfa, mappings, curr, &ectbl)) {
 				goto error;
 			}
 		}

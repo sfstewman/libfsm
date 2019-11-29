@@ -89,8 +89,22 @@ struct fsm *
 fsm_mergeab(struct fsm *a, struct fsm *b,
     fsm_state_t *base_b);
 
+struct bitmap {
+	unsigned char *bits;
+};
+
+struct epsilon_closure_table {
+	struct bitmap *table;
+};
+
+int
+epsilon_closure_table_init(struct epsilon_closure_table *tbl, unsigned nstates);
+
+void
+bitmap_or_bits(unsigned char *bm1, const unsigned char *bm2, unsigned nbytes);
+
 struct state_set *
-epsilon_closure(const struct fsm *fsm, fsm_state_t state, struct state_set *closure);
+epsilon_closure(const struct fsm *fsm, fsm_state_t state, struct state_set *closure, struct epsilon_closure_table *tbl);
 
 /*
  * Internal free function that invokes free(3) by default, or a user-provided
