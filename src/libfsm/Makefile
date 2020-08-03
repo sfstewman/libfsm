@@ -31,6 +31,7 @@ SRC += src/libfsm/determinise.c
 SRC += src/libfsm/glushkovise.c
 SRC += src/libfsm/minimise.c
 SRC += src/libfsm/reverse.c
+SRC += src/libfsm/hopcroft.c
 
 # binary operators
 SRC += src/libfsm/merge.c

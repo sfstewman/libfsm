@@ -17,7 +17,7 @@
 #include "internal.h"
 
 int
-fsm_minimise(struct fsm *fsm)
+fsm_minimise_brz(struct fsm *fsm)
 {
 	int r;
 
@@ -53,3 +53,7 @@ fsm_minimise(struct fsm *fsm)
 	return 1;
 }
 
+int fsm_minimise_hop(struct fsm *fsm);
+
+/* int fsm_minimise(struct fsm *fsm) { return fsm_minimise_brz(fsm); } */
+int fsm_minimise(struct fsm *fsm) { return fsm_minimise_hop(fsm); }
