@@ -450,6 +450,10 @@ fsm_minimise_hop(struct fsm *fsm)
 	struct hopcroft hop;
 	int errsv, ret;
 
+	if (fsm_trim(fsm, FSM_TRIM_START_AND_END_REACHABLE) < 0) {
+		return 0;
+	}
+
 	if (fsm->statecount < 2) {
 		return 1;
 	}
