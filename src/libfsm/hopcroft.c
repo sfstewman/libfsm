@@ -225,14 +225,14 @@ hopcroft_inner(struct fsm *fsm, struct hopcroft *hop)
 	}
 
 	while (hop->worklist.n > 0) {
-		unsigned part;
+		unsigned partition_to_check;
 		int ch;
 
 		assert(hop->worklist.n > 0);
 
-		part = hop->worklist.q[--hop->worklist.n];
+		partition_to_check = hop->worklist.q[--hop->worklist.n];
 
-		assert(part < hop->np);
+		assert(partition_to_check < hop->np);
 
 		for (ch=0; ch < FSM_SIGMA_COUNT; ch++) {
 			/* range of edges that involve symbol 'ch' */
@@ -243,18 +243,22 @@ hopcroft_inner(struct fsm *fsm, struct hopcroft *hop)
 
 			unsigned ei, p;
 
-			/* build X: set of states that have a transition into partition 'part' */
+			/* build X: set of states that have a transition into partition 'partition_to_check' */
 			for (ei = e0; ei < e1; ei++) {
 				const unsigned src = hop->edges[ei].src;
 				const unsigned dst = hop->edges[ei].dst;
-				if (hop->plookup[dst] == part) {
+				if (hop->plookup[dst] == partition_to_check) {
 					hop->members[nmembers++] = src;
 					hop->ismemb[src] = 1;
 				}
 			}
 
-			/* iterate over current partitions */
-			p=0;
+			/* iterate over current partitions, checking the transitions of their states.
+			 *
+			 * In each partition, divide states into two sets: states that are part of set X and states that are
+			 * not.  If both of these sets are non-empty, we split that partition into these two sets.
+			 */
+			p = 0;
 			while (p < hop->np) {
 				const unsigned p0 = hop->pstart[p];
 				const unsigned pnum = hop->pend[p] - p0;
@@ -314,7 +318,9 @@ hopcroft_inner(struct fsm *fsm, struct hopcroft *hop)
 
 					{
 						/* update work lists
-						 * XXX - can we avoid this linear scan?
+						 *
+						 * XXX - we can avoid the linear scan by keeping an array
+						 *       that indicates whether the partition is on the worklist or not.
 						 */
 						bool in_worklist = false;
 						for (wi = 0; wi < hop->worklist.n; wi++) {
