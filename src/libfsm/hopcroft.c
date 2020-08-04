@@ -43,6 +43,8 @@ struct hopcroft {
 	fsm_state_t *scratch;   /* holds states while partitions are divided */
 	int         *ismemb;    /* indicates if a state has a transition into the current partition */
 	fsm_state_t *members;   /* list of states with transition into current partition */
+
+	unsigned char *check_set; /* original members of partition_to_check.  This could be a bit vector. */
 };
 
 static void
@@ -59,6 +61,7 @@ hopcroft_finalize(struct fsm *fsm, struct hopcroft *hop)
 	f_free(A, hop->scratch);
 	f_free(A, hop->ismemb);
 	f_free(A, hop->members);
+	f_free(A, hop->check_set);
 	f_free(A, hop->edges);
 }
 
@@ -106,6 +109,10 @@ hopcroft_initialize(struct fsm *fsm, struct hopcroft *hop)
 	}
 
 	if (hop->members = f_calloc(A, n, sizeof hop->members[0]), hop->members == NULL) {
+		goto error;
+	}
+
+	if (hop->check_set = f_calloc(A, n, sizeof hop->check_set[0]), hop->check_set == NULL) {
 		goto error;
 	}
 
@@ -232,6 +239,23 @@ hopcroft_inner(struct fsm *fsm, struct hopcroft *hop)
 
 		partition_to_check = hop->worklist.q[--hop->worklist.n];
 
+		/* Need to check if transitions into the *current* partition_to_check divides all existing partitions.  However,
+		 * subsequent loops can split the set before, so we first save all the members in a way that's easy to look up.
+		 *
+		 * This is referred to as the 'check set' below.  It is the set of all states that were in partition_to_check
+		 * when it was removed from the work list.
+		 */
+		{
+			const unsigned p0 = hop->pstart[partition_to_check];
+			const unsigned p1 = hop->pend[partition_to_check];
+			unsigned pi;
+
+			for (pi=p0; pi < p1; pi++) {
+				const fsm_state_t st = hop->pstates[pi];
+				hop->check_set[st] = 1;
+			}
+		}
+
 		assert(partition_to_check < hop->np);
 
 		for (ch=0; ch < FSM_SIGMA_COUNT; ch++) {
@@ -243,14 +267,20 @@ hopcroft_inner(struct fsm *fsm, struct hopcroft *hop)
 
 			unsigned ei, p;
 
-			/* build X: set of states that have a transition into partition 'partition_to_check' */
+			/* build set X: set of states that have a transition into the check set */
 			for (ei = e0; ei < e1; ei++) {
 				const unsigned src = hop->edges[ei].src;
 				const unsigned dst = hop->edges[ei].dst;
-				if (hop->plookup[dst] == partition_to_check) {
+
+				if (hop->check_set[dst]) {
 					hop->members[nmembers++] = src;
 					hop->ismemb[src] = 1;
 				}
+			}
+
+			/* if there are no transitions along symbol ch, it won't partition anything */
+			if (nmembers == 0) {
+				continue;
 			}
 
 			/* iterate over current partitions, checking the transitions of their states.
@@ -354,7 +384,7 @@ hopcroft_inner(struct fsm *fsm, struct hopcroft *hop)
 			}
 
 			{
-				/* reset member set */
+				/* finished with symbol ch, reset set X (members and ismemb) */
 				unsigned mi;
 
 				for (mi=0; mi < nmembers; mi++) {
@@ -362,6 +392,11 @@ hopcroft_inner(struct fsm *fsm, struct hopcroft *hop)
 					hop->ismemb[st] = 0;
 				}
 			}
+		}
+
+		{
+			/* finished with all symbols and partitions, reset check set */
+			memset(hop->check_set, 0, fsm->statecount * sizeof hop->check_set[0]);
 		}
 	}
 
@@ -449,6 +484,8 @@ fsm_minimise_hop(struct fsm *fsm)
 {
 	struct hopcroft hop;
 	int errsv, ret;
+
+	/* XXX - verify that the graph is a DFA */
 
 	if (fsm_trim(fsm, FSM_TRIM_START_AND_END_REACHABLE) < 0) {
 		return 0;
