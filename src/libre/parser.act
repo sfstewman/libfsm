@@ -306,6 +306,17 @@
 		@end   = lex_state->lx.end;
 	@};
 
+	UNSUPPORTED: () -> (c :char, start :pos, end :pos) = @{
+		assert(lex_state->buf.a[0] == '\\');
+		assert(lex_state->buf.a[1] != '\0');
+		assert(lex_state->buf.a[2] == '\0');
+
+		@c = lex_state->buf.a[1];
+
+		@start = lex_state->lx.start;
+		@end   = lex_state->lx.end;
+	@};
+
 	CONTROL: () -> (c :char, start :pos, end :pos) = @{
 		assert(lex_state->buf.a[0] == '\\');
 		assert(lex_state->buf.a[1] == 'c');
