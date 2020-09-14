@@ -60,15 +60,16 @@
 '\N' -> $named__class;
 
 '\'   /[0-7]{2,3}/     -> $oct;
+'\0'                   -> $oct;
 
-# PCRE treats \0 ... \7 as back references outside of a character class
+# PCRE treats \1 ... \7 as back references outside of a character class
 #
 # It's actually more complicated than that.  \<digits> is treated as a
 # backref as long as there are _already_ that many capture groups in the
 # expression.  Given that back references are unsupported, this seems
 # like a overkill for a seldom-used feature.  However, it's nice to
 # indicate that the usual backrefs aren't supported.
-'\'   /[0-7]/          -> $unsupported;
+'\'   /[1-7]/          -> $unsupported;
 
 # the new and proper way for back references
 '\g' -> $unsupported;
