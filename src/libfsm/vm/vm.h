@@ -58,8 +58,13 @@ enum dfavm_op_dest {
 	VM_DEST_FAR   = 3,  // 32-bit dest
 };
 
+#define DFAVM_NOSTATE (~0U)
+
 struct dfavm_op_ir {
 	struct dfavm_op_ir *next;
+
+	/* immediate dominator - used in loop analysis / optimization */
+	struct dfavm_op_ir *idom;
 
 	/* Holds an integer identifier that's unique for all opcodes in a
 	 * dfavm_assembler
@@ -78,15 +83,15 @@ struct dfavm_op_ir {
 	const struct ir_state *ir_state; // for void *opaque
 
 	uint32_t num_incoming; // number of branches to this instruction
-	int in_trace;
 	int cmp_arg;
+
+	unsigned state;
 
 	enum dfavm_op_cmp cmp;
 	enum dfavm_op_instr instr;
 
 	union {
 		struct {
-			unsigned state;
 			enum dfavm_op_end end_bits;
 		} fetch;
 
@@ -99,18 +104,21 @@ struct dfavm_op_ir {
 			uint32_t dest_state;
 		} br;
 	} u;
+
+	unsigned in_trace:1;
+	unsigned visited:1;
 };
 
 struct dfavm_vm_op {
 	const struct dfavm_op_ir *ir;
 	uint32_t offset;
+	unsigned state;
 
 	enum dfavm_op_cmp cmp;
 	enum dfavm_op_instr instr;
 
 	union {
 		struct {
-			unsigned state;
 			enum dfavm_op_end end_bits;
 		} fetch;
 

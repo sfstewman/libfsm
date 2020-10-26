@@ -198,9 +198,13 @@ print_vm_op(FILE *f, struct dfavm_vm_op *op)
 
 	fprintf(f, "\t; %6lu bytes",
 		(unsigned long)op->num_encoded_bytes);
+
+	if (op->state != DFAVM_NOSTATE) {
+		fprintf(f, "  [state %u]", op->state);
+	}
+
 	switch (op->instr) {
 	case VM_OP_FETCH:
-		fprintf(f, "  [state %u]", op->u.fetch.state);
 		break;
 
 	case VM_OP_BRANCH:
@@ -274,6 +278,7 @@ build_vm_op(const struct dfavm_op_ir *ir, struct dfavm_vm_op *op)
 	op->instr   = ir->instr;
 	op->cmp     = ir->cmp;
 	op->cmp_arg = ir->cmp_arg;
+	op->state   = ir->state;
 
 	switch (op->instr) {
 	case VM_OP_STOP:
@@ -281,7 +286,6 @@ build_vm_op(const struct dfavm_op_ir *ir, struct dfavm_vm_op *op)
 		break;
 
 	case VM_OP_FETCH:
-		op->u.fetch.state    = ir->u.fetch.state;
 		op->u.fetch.end_bits = ir->u.fetch.end_bits;
 		break;
 

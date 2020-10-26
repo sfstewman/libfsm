@@ -5,6 +5,7 @@
  */
 
 #include <assert.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -238,7 +239,7 @@ print_op_ir(FILE *f, struct dfavm_op_ir *op)
 
 	switch (op->instr) {
 	case VM_OP_FETCH:
-		n = snprintf(opstr, nop, ", state: %u", op->u.fetch.state);
+		n = snprintf(opstr, nop, ", state: %u", op->state);
 		break;
 
 	case VM_OP_BRANCH:
@@ -295,6 +296,7 @@ opasm_new(struct dfavm_assembler_ir *a, enum dfavm_op_instr instr, enum dfavm_op
 
 		op->asm_index = a->count++;
 		op->index = 0;
+		op->state = DFAVM_NOSTATE;
 
 		op->cmp   = cmp;
 		op->instr = instr;
@@ -315,7 +317,7 @@ opasm_new_fetch(struct dfavm_assembler_ir *a, unsigned state, enum dfavm_op_end 
 
 	op = opasm_new(a, VM_OP_FETCH, VM_CMP_ALWAYS, 0, ir_state);
 	if (op != NULL) {
-		op->u.fetch.state    = state;
+		op->state = state;
 		op->u.fetch.end_bits = end;
 	}
 
@@ -735,6 +737,7 @@ initial_translate_state(struct dfavm_assembler_ir *a, const struct ir *ir, size_
 
 	if (st->isend && st->strategy == IR_SAME && st->u.same.to == ind) {
 		*opp = opasm_new_stop(a, VM_CMP_ALWAYS, 0, VM_END_SUCC, st);
+		(*opp)->state = ind;
 		return a->ops[ind];
 	}
 
@@ -940,6 +943,539 @@ eliminate_unnecessary_branches(struct dfavm_assembler_ir *a)
 	} while (count > 0);
 }
 
+struct ir_edge {
+	struct dfavm_op_ir *src;
+	struct dfavm_op_ir *dst;
+};
+
+struct ir_predecessor_edges {
+	uint32_t *offsets;
+	struct ir_edge *edges;
+};
+
+static int
+pred_edge_cmp(const void *a, const void *b)
+{
+	const struct ir_edge *ea = a;
+	const struct ir_edge *eb = b;
+
+	if (ea->dst != eb->dst) {
+		return (ea->dst->asm_index > eb->dst->asm_index) - (ea->dst->asm_index < eb->dst->asm_index);
+	}
+
+	return (ea->src->asm_index > eb->src->asm_index) - (ea->src->asm_index < eb->src->asm_index);
+}
+
+static struct ir_predecessor_edges *
+build_pred_edges(struct dfavm_assembler_ir *a)
+{
+	static const struct ir_predecessor_edges zero;
+
+	struct dfavm_op_ir *op;
+	struct ir_predecessor_edges *pred;
+	size_t num_edges, edge_index, state_edge_count, state_index;
+	uint32_t curr_asm_ind;
+
+	/* count edges */
+	num_edges = 0;
+	for (op = a->linked; op != NULL; op = op->next) {
+		if (op->next != NULL) {
+			num_edges++;
+		}
+
+		if (op->instr == VM_OP_BRANCH) {
+			num_edges++;
+		}
+	}
+
+	/*
+	printf("found %zu edges\n", num_edges);
+	*/
+
+	pred = malloc(sizeof *pred);
+	if (pred == NULL) {
+		return NULL;
+	}
+
+	*pred = zero;
+
+	pred->offsets = calloc(a->count+1, sizeof *pred->offsets);
+	if (pred->offsets == NULL) {
+		goto error;
+	}
+
+	pred->edges = calloc(num_edges, sizeof *pred->edges);
+	if (pred->edges == NULL) {
+		goto error;
+	}
+
+	edge_index = 0;
+	/* fill in edges */
+	for (op = a->linked; op != NULL; op = op->next) {
+		if (op->next != NULL) {
+			assert(edge_index < num_edges);
+
+			pred->edges[edge_index].src = op;
+			pred->edges[edge_index].dst = op->next;
+			edge_index++;
+		}
+
+		if (op->instr == VM_OP_BRANCH) {
+			assert(edge_index < num_edges);
+
+			pred->edges[edge_index].src = op;
+			pred->edges[edge_index].dst = op->u.br.dest_arg;
+			edge_index++;
+		}
+	}
+
+	assert(edge_index == num_edges);
+
+	/* sort edges */
+	qsort(&pred->edges[0], num_edges, sizeof *pred->edges, pred_edge_cmp);
+
+	/* count unique dests and setup offsets */
+	curr_asm_ind = pred->edges[0].dst->asm_index;
+	state_edge_count = 1;
+
+	for (edge_index=1; edge_index < num_edges; edge_index++) {
+		if (pred->edges[edge_index].dst->asm_index != curr_asm_ind) {
+			pred->offsets[1+curr_asm_ind] = state_edge_count;
+			curr_asm_ind = pred->edges[edge_index].dst->asm_index;
+			state_edge_count = 1;
+		} else {
+			state_edge_count++;
+		}
+	}
+
+	pred->offsets[1+curr_asm_ind] = state_edge_count;
+
+	for (state_index=0; state_index < a->count; state_index++) {
+		pred->offsets[state_index+1] += pred->offsets[state_index];
+	}
+
+	/*
+	for (state_index=0; state_index < a->count+1; state_index++) {
+		printf("edge offset[%4zu] = %lu\n", state_index, (unsigned long)pred->offsets[state_index]);
+	}
+	*/
+
+	return pred;
+
+error:
+	if (pred != NULL) {
+		free(pred->offsets);
+		free(pred->edges);
+		free(pred);
+	}
+
+	return NULL;
+}
+
+static struct dfavm_op_ir *
+idom_intersect(struct dfavm_op_ir *a, struct dfavm_op_ir *b)
+{
+	while (a != b) {
+		while (a->index < b->index) {
+			a = a->idom;
+		}
+
+		while (b->index < a->index) {
+			b = b->idom;
+		}
+	}
+
+	return a;
+}
+
+static void
+print_all_states(struct dfavm_assembler_ir *a);
+
+/* TODO: this method is very naive.  replace with a better method! */
+static int
+identify_idoms(struct dfavm_assembler_ir *a)
+{
+	struct ir_predecessor_edges *pred_edges = NULL;
+	struct dfavm_op_ir *op, **ordered, **stack, *start;
+	uint32_t ordered_top, stack_top;
+	bool has_changed;
+	int ret;
+
+	ret = -1;
+
+	/* allocate temporary structures */
+	pred_edges = build_pred_edges(a);
+	if (pred_edges == NULL) {
+		goto cleanup;
+	}
+
+	ordered = calloc(2*a->count, sizeof *ordered);
+	if (ordered == NULL) {
+		goto cleanup;
+	}
+
+	stack = &ordered[a->count];
+
+	/* clear visited bit, set idom to NULL */
+	for (op=a->linked; op != NULL; op=op->next) {
+		op->idom = NULL;
+		op->visited = 0;
+	}
+
+	start = a->linked;
+
+	stack[0]  = start;
+	stack_top = 1;
+	ordered_top = 0;
+	start->visited = 1;
+	while (stack_top > 0) {
+		struct dfavm_op_ir *node;
+
+		assert(stack_top > 0);
+
+		node = stack[stack_top-1];
+
+		assert(node != NULL);
+		assert(node->visited);
+
+		if (node->next != NULL && !node->next->visited) {
+			assert(stack_top < a->count);
+			stack[stack_top++] = node->next;
+			node->next->visited = 1;
+		} else if (node->instr == VM_OP_BRANCH && node->u.br.dest_arg != NULL && !node->u.br.dest_arg->visited) {
+			struct dfavm_op_ir *dest;
+
+			dest = node->u.br.dest_arg;
+			assert(dest != NULL);
+			assert(!dest->visited);
+
+			stack[stack_top++] = dest;
+			dest->visited = 1;
+		} else {
+			assert(ordered_top < a->count);
+
+			/* index member is only assigned after
+			 * optimizations.  We can borrow it for now
+			 */
+			node->index = ordered_top;
+			ordered[ordered_top++] = node;
+			stack_top--;
+		}
+	}
+
+	start->idom = start;
+
+	/*
+	dump_states(stdout, a);
+	*/
+
+	unsigned long iter = 0;
+	/* iterate until the sets no longer change */
+	for (has_changed = true; has_changed; iter++) {
+		uint32_t ind;
+
+		/*
+		printf("---[ iter %lu ]---\n", iter);
+		*/
+		has_changed = false;
+
+		// iterate in reverse postorder
+		for (ind = ordered_top; ind > 0; ind--) {
+			struct dfavm_op_ir *node;
+
+			node = ordered[ind-1];
+			if (node != start) {
+				const uint32_t idx = node->asm_index;
+				const uint32_t ei0 = pred_edges->offsets[idx+0];
+				const uint32_t ei1 = pred_edges->offsets[idx+1];
+
+				struct dfavm_op_ir *new_idom;
+				uint32_t ei;
+
+				/*
+				printf("node: %lu:%p idom=%lu:%p\n",
+					(unsigned long)node->index, (void *)node,
+					(node->idom) ?  (unsigned long)node->idom->index : 0UL,
+					(node->idom) ?  (void *)node->idom : NULL);
+				printf("  - asm_index = %lu, offsets: %lu ... %lu\n",
+					(unsigned long)idx, (unsigned long)ei0, (unsigned long)ei1);
+				*/
+
+				new_idom = NULL;
+				for (ei=ei0; ei < ei1; ei++) {
+					struct dfavm_op_ir *pred;
+
+					assert(pred_edges->edges[ei].dst == node);
+
+					pred = pred_edges->edges[ei].src;
+					/*
+					printf("  - pred: %lu:%p idom=%lu:%p\n",
+						(unsigned long)pred->index, (void *)pred,
+						pred->idom ? (unsigned long)pred->idom->index : 0UL,
+						pred->idom ? (void *)pred->idom : NULL);
+					*/
+
+					if (pred->idom == NULL) {
+						continue;
+					}
+
+					if (new_idom == NULL) {
+						new_idom = pred;
+					} else {
+						/*
+						printf("  - intersect(%lu:%p, %lu:%p)\n",
+							(unsigned long)new_idom->index, (void *)new_idom,
+							(unsigned long)pred->index, (void *)pred);
+						*/
+
+						new_idom = idom_intersect(pred,new_idom);
+					}
+					/*
+					printf("  - new_idom = %lu:%p\n",
+						(unsigned long)new_idom->index, (void *)new_idom);
+					*/
+				}
+
+				assert(new_idom != NULL);
+
+				if (node->idom != new_idom) {
+					node->idom = new_idom;
+					/*
+					printf("  * new_idom = %lu:%p\n",
+						(unsigned long)new_idom->index, (void *)new_idom);
+					*/
+					has_changed = true;
+				}
+			}
+		}
+	}
+
+	/*
+	dump_states(stdout, a);
+	*/
+
+	/* debug dump of dominators */
+	/*
+	printf("--[ idoms ]--\n");
+	{
+		uint32_t i;
+		for (i=0; i < ordered_top; i++) {
+			printf("[%6lu:%p] idom %6lu:%p\n",
+				(unsigned long)ordered[i]->index, (void *)ordered[i],
+				(unsigned long)ordered[i]->idom->index, (void *)ordered[i]->idom);
+		}
+	}
+	*/
+
+	/* return success! */
+	ret = 0;
+
+cleanup:
+	if (pred_edges != NULL) {
+		free(pred_edges->offsets);
+		free(pred_edges->edges);
+		free(pred_edges);
+	}
+
+	free(ordered);
+
+	for (op=a->linked; op != NULL; op=op->next) {
+		op->visited = 0;
+		op->index = 0;
+	}
+
+	return ret;
+}
+
+static bool
+dominates(struct dfavm_op_ir *node, struct dfavm_op_ir *dom)
+{
+	struct dfavm_op_ir *idom;
+
+	idom = node->idom;
+
+	/* struct dfavm_op_ir *node; */
+	if (idom == dom) {
+		return true;
+	}
+
+	while (idom != idom->idom) {
+		if (idom == dom) {
+			return true;
+		}
+
+		idom = idom->idom;
+	}
+
+	return idom == dom;
+}
+
+struct ir_loop_entry {
+	struct dfavm_op_ir *head;
+	struct dfavm_op_ir *tail;
+};
+
+struct ir_loop {
+	size_t len;
+	size_t cap;
+
+	struct ir_loop_entry *entries;
+};
+
+static int
+cmp_loop(const void *a, const void *b)
+{
+	const struct ir_loop_entry *la = a;
+	const struct ir_loop_entry *lb = b;
+
+	if (la->head == lb->head) {
+		return (la->tail->index > lb->tail->index) - (la->tail->index < lb->tail->index);
+	}
+
+	return (la->head->index > lb->head->index) - (la->head->index < lb->head->index);
+}
+
+static void
+free_loops(struct ir_loop *l)
+{
+	if (l != NULL) {
+		free(l->entries);
+		free(l);
+	}
+}
+
+static int
+add_loop(struct ir_loop *l, struct dfavm_op_ir *head, struct dfavm_op_ir *tail)
+{
+	assert(l != NULL);
+	if (l->len >= l->cap) {
+		size_t new_cap;
+		struct ir_loop_entry *new_entries;
+
+		if (l->cap < 16) {
+			new_cap = 16;
+		} else if (l->cap < 2048) {
+			new_cap = 2*l->cap;
+		} else {
+			new_cap = l->cap + l->cap/2;
+		}
+
+		new_entries = realloc(l->entries, new_cap * sizeof *new_entries);
+		if (new_entries == NULL) {
+			return 0;
+		}
+
+		l->cap = new_cap;
+		l->entries = new_entries;
+	}
+
+	assert(l->len < l->cap);
+	assert(l->entries != NULL);
+
+	l->entries[l->len].head = head;
+	l->entries[l->len].tail = tail;
+
+	l->len++;
+
+	return 1;
+}
+
+static struct ir_loop *
+identify_loops(struct dfavm_assembler_ir *a)
+{
+	struct dfavm_op_ir *op;
+	struct ir_loop *loops;
+	unsigned ind;
+
+	loops = malloc(sizeof *loops);
+	if (loops == NULL) {
+		return NULL;
+	}
+
+	loops->entries = NULL;
+	loops->len = loops->cap = 0;
+
+	/* index member is not set until after optimizations.
+	 * we borrow it here to ensure that loops are ordered
+	 */
+
+	for (ind=0,op=a->linked; op != NULL; ind++,op=op->next) {
+		op->index = ind;
+	}
+
+	for (op=a->linked; op != NULL; op=op->next) {
+		if (op->instr == VM_OP_BRANCH) {
+			struct dfavm_op_ir *dest;
+
+			dest = op->u.br.dest_arg;
+			if (dominates(op, dest)) {
+				if (!add_loop(loops, dest, op)) {
+					goto error;
+				}
+			}
+		}
+	}
+
+	if (loops->len > 0) {
+		qsort(loops->entries, loops->len, sizeof loops->entries[0], cmp_loop);
+	}
+
+	for (op=a->linked; op != NULL; op=op->next) {
+		op->index = 0;
+	}
+
+	return loops;
+
+error:
+	free_loops(loops);
+
+	for (op=a->linked; op != NULL; op=op->next) {
+		op->index = 0;
+	}
+
+	return NULL;
+}
+
+static int
+optimize_loops(struct dfavm_assembler_ir *a)
+{
+	struct ir_loop *loops;
+
+	/* identify immediate dominators */
+	if (identify_idoms(a) < 0) {
+		return -1;
+	}
+
+	/* identify natural loops */
+	loops = identify_loops(a);
+	if (loops == NULL) {
+		return -1;
+	}
+
+	dump_states(stdout, a);
+	if (loops->len > 0) {
+		size_t i;
+		printf("---[ loops: %zu ]---\n", loops->len);
+		for (i=0; i < loops->len; i++) {
+			printf("[%4zu] head %4lu:%p  tail %4lu:%p\n", i,
+				(unsigned long)loops->entries[i].head->asm_index, (void *)loops->entries[i].head,
+				(unsigned long)loops->entries[i].tail->asm_index, (void *)loops->entries[i].tail);
+		}
+	} else {
+		printf("\nno loops.\n\n");
+	}
+
+	/* analyze natural loops:
+	 * - single-character chokepoints
+	 * - fixed string portions
+	 * - multiple fixed string portions
+	 */
+
+	free_loops(loops);
+
+	return 0;
+}
+
 static void
 order_basic_blocks(struct dfavm_assembler_ir *a)
 {
@@ -1029,12 +1565,10 @@ static void
 dump_states(FILE *f, struct dfavm_assembler_ir *a)
 {
 	struct dfavm_op_ir *op;
-	size_t count;
 
-	count = 0;
 	for (op = a->linked; op != NULL; op = op->next) {
-		if (op->instr == VM_OP_FETCH) {
-			unsigned state = op->u.fetch.state;
+		if (op->state != DFAVM_NOSTATE) {
+			unsigned state = op->state;
 			fprintf(f, "\n%p ;;; state %u (index: %lu, asm_index: %lu) %s\n",
 				(void *)op, state, (unsigned long)op->index, (unsigned long)op->asm_index,
 				(state == a->start) ? "(start)" : "");
@@ -1083,6 +1617,7 @@ dfavm_compile_ir(struct dfavm_assembler_ir *a, const struct ir *ir, struct fsm_v
 
 	/* basic optimizations */
 	if (opts.flags & FSM_VM_COMPILE_OPTIM) {
+		optimize_loops(a);
 		eliminate_unnecessary_branches(a);
 	}
 
