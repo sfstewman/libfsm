@@ -15,8 +15,18 @@ SRC += src/libfsm/print/go.c
 SRC += src/libfsm/print/vmc.c
 SRC += src/libfsm/print/vmdot.c
 SRC += src/libfsm/print/vmasm.c
+SRC += src/libfsm/print/vmir.c
 
-.for src in ${SRC:Msrc/libfsm/print/awk.c} ${SRC:Msrc/libfsm/print/vmc.c} ${SRC:Msrc/libfsm/print/rust.c} ${SRC:Msrc/libfsm/print/sh.c} ${SRC:Msrc/libfsm/print/go.c} ${SRC:Msrc/libfsm/print/vmasm.c} ${SRC:Msrc/libfsm/print/vmdot.c}
+c99.${src}  = ${SRC:Msrc/libfsm/print/awk.c}
+c99.${src} += ${SRC:Msrc/libfsm/print/vmc.c}
+c99.${src} += ${SRC:Msrc/libfsm/print/rust.c}
+c99.${src} += ${SRC:Msrc/libfsm/print/sh.c}
+c99.${src} += ${SRC:Msrc/libfsm/print/go.c}
+c99.${src} += ${SRC:Msrc/libfsm/print/vmasm.c}
+c99.${src} += ${SRC:Msrc/libfsm/print/vmdot.c}
+c99.${src} += ${SRC:Msrc/libfsm/print/vmir.c}
+
+.for src in ${c99.${src}}
 CFLAGS.${src} += -std=c99 # XXX: for ir.h
 DFLAGS.${src} += -std=c99 # XXX: for ir.h
 .endfor
