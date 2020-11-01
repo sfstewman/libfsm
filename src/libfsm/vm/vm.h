@@ -208,6 +208,9 @@ void
 dfavm_free_vm(struct fsm_dfavm *vm);
 
 void
+dfavm_print_opcodes(FILE *f, const struct dfavm_assembler_ir *a);
+
+void
 dfavm_opasm_finalize_op(struct dfavm_assembler_ir *a);
 
 /* v1 */

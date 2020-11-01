@@ -840,7 +840,7 @@ struct dfavm_op_ir **find_opchain_end(struct dfavm_op_ir **opp)
 }
 
 static void
-dump_states(FILE *f, struct dfavm_assembler_ir *a);
+dump_states(FILE *f, const struct dfavm_assembler_ir *a);
 
 static void
 eliminate_unnecessary_branches(struct dfavm_assembler_ir *a)
@@ -1089,7 +1089,7 @@ idom_intersect(struct dfavm_op_ir *a, struct dfavm_op_ir *b)
 }
 
 static void
-print_all_states(struct dfavm_assembler_ir *a);
+print_all_states(const struct dfavm_assembler_ir *a);
 
 /* TODO: this method is very naive.  replace with a better method! */
 static int
@@ -1562,7 +1562,7 @@ assign_opcode_indexes(struct dfavm_assembler_ir *a)
 }
 
 static void
-dump_states(FILE *f, struct dfavm_assembler_ir *a)
+dump_states(FILE *f, const struct dfavm_assembler_ir *a)
 {
 	struct dfavm_op_ir *op;
 
@@ -1579,8 +1579,14 @@ dump_states(FILE *f, struct dfavm_assembler_ir *a)
 	}
 }
 
+void
+dfavm_print_opcodes(FILE *f, const struct dfavm_assembler_ir *a)
+{
+	dump_states(f, a);
+}
+
 static void
-print_all_states(struct dfavm_assembler_ir *a)
+print_all_states(const struct dfavm_assembler_ir *a)
 {
 	dump_states(stderr, a);
 }
