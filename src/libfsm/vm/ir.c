@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include <errno.h>
 #include <ctype.h>
 
@@ -943,6 +944,7 @@ eliminate_unnecessary_branches(struct dfavm_assembler_ir *a)
 	} while (count > 0);
 }
 
+#if 0
 struct ir_edge {
 	struct dfavm_op_ir *src;
 	struct dfavm_op_ir *dst;
@@ -1475,6 +1477,7 @@ optimize_loops(struct dfavm_assembler_ir *a)
 
 	return 0;
 }
+#endif /* 0 */
 
 static void
 order_basic_blocks(struct dfavm_assembler_ir *a)
@@ -1591,9 +1594,1147 @@ print_all_states(const struct dfavm_assembler_ir *a)
 	dump_states(stderr, a);
 }
 
+static void
+print_sym_with_escaping(int sym, FILE *f)
+{
+	if (!isprint(sym)) {
+		fprintf(f, "\\x%02x", sym);
+		return;
+	}
+
+	if (sym == '[' || sym == ']' || sym == '-' || sym == '\\') {
+		fputc('\\', f);
+	}
+
+	fputc(sym, f);
+}
+
+static void
+print_sym_set(const struct bm *bm, FILE *f)
+{
+	int start, prev, bit;
+
+	fputc('[', f);
+
+	start = prev = bit = -1;
+	for (;;) {
+		bit = bm_next(bm, bit, 1);
+
+		if (prev == -1 || bit > prev+1 || bit > UCHAR_MAX) {
+			if (start != -1) {
+				if (prev > start+1) {
+					fputc('-', f);
+					print_sym_with_escaping(prev, f);
+				} else if (prev == start+1) {
+					print_sym_with_escaping(prev, f);
+				}
+			}
+
+			if (bit > UCHAR_MAX) {
+				break;
+			}
+
+			print_sym_with_escaping(bit, f);
+
+			start = bit;
+		}
+
+		prev = bit;
+	}
+
+	fputc(']', f);
+}
+
+static void
+loop_analysis_print_network(const struct dfavm_loop_analysis *a, FILE *f)
+{
+	size_t i;
+
+	fprintf(f, "---[ loop analysis : %zu nstates ]---\n", a->nstates);
+
+	for (i = 0; i < a->nstates; i++) {
+		size_t j;
+
+		fprintf(f, "%6zu | %zu edges | RPorder: %u | idom: %u%s%s\n",
+			i, a->states[i].nedges, a->states[i].order, a->states[i].idom,
+			(i == a->start) ? " | start" : "",
+			(a->states[i].isend) ? " | end" : "");
+
+		fprintf(f, "       - no edges: ");
+		print_sym_set(&a->states[i].no_edge_syms, f);
+		fprintf(f, "\n");
+
+		for (j=0; j < a->states[i].nedges; j++) {
+			fprintf(f, "       - edge: %u ", a->states[i].edges[j].dst);
+			print_sym_set(&a->states[i].edges[j].sym_bits, f);
+			fprintf(f, "\n");
+		}
+	}
+}
+
+static void
+dump_loop_analysis(const struct dfavm_loop_analysis *a)
+{
+	loop_analysis_print_network(a, stderr);
+}
+
+static int
+loop_ir_node_from_groups(struct dfavm_loop_ir *node, size_t ngroup, const struct ir_group *groups)
+{
+	size_t grp;
+
+	node->nedges = ngroup;
+	node->edges = calloc(ngroup, sizeof node->edges[0]);
+	if (node->edges == NULL) {
+		return -1;
+	}
+
+	bm_setall(&node->no_edge_syms);
+
+	for (grp=0; grp < ngroup; grp++) {
+		unsigned to;
+		size_t i,n;
+
+		to = groups[grp].to;
+		n  = groups[grp].n;
+
+		node->edges[grp].dst = to;
+
+		for (i=0; i < n; i++) {
+			bm_setrange(&node->edges[grp].sym_bits, groups[grp].ranges[i].start, groups[grp].ranges[i].end);
+			bm_clearrange(&node->no_edge_syms, groups[grp].ranges[i].start, groups[grp].ranges[i].end);
+		}
+	}
+
+	return 0;
+}
+
+static int loop_ir_node_from_dominant(struct dfavm_loop_ir *node, const struct ir_state *ir_st)
+{
+	struct bm dom_edge_bits;
+	size_t edge,grp,ngrp,dom_ind;
+	unsigned dom;
+	const struct ir_group *groups;
+
+	bm_setall(&dom_edge_bits);
+
+	ngrp = ir_st->u.dominant.n;
+	dom = ir_st->u.dominant.mode;
+	groups = ir_st->u.dominant.groups;
+
+	bm_clear(&node->no_edge_syms);
+
+	node->nedges = ngrp+1;
+	node->edges = calloc(ngrp+1, sizeof node->edges[0]);
+	if (node->edges == NULL) {
+		return -1;
+	}
+
+	dom_ind = ngrp;
+	for (grp=0, edge=0; grp < ngrp; grp++, edge++) {
+		unsigned to = groups[grp].to;
+		size_t i,nrange;
+
+		assert(to != dom);
+
+		if (dom_ind == ngrp && to > dom) {
+			/* mark the position and fill this in afterwards */
+			dom_ind = edge++;
+		}
+
+		node->edges[edge].dst = to;
+
+		nrange = groups[grp].n;
+		for (i=0; i < nrange; i++) {
+			unsigned char start, end;
+
+			start = groups[grp].ranges[i].start;
+			end   = groups[grp].ranges[i].end;
+
+			bm_setrange(&node->edges[edge].sym_bits, start, end);
+			bm_clearrange(&dom_edge_bits, start, end);
+
+			/*
+			fprintf(stderr, "dom: %u edge: %zu to: %u %d - %d  | bits: ", dom, edge, to, start, end);
+			print_sym_set(&node->edges[grp].sym_bits, stderr);
+			fprintf(stderr, " | dom bits: ");
+			print_sym_set(&dom_edge_bits, stderr);
+			fprintf(stderr, "\n");
+			*/
+		}
+	}
+
+	/* fill in the dominant edge... */
+	node->edges[dom_ind].dst = dom;
+	node->edges[dom_ind].sym_bits = dom_edge_bits;
+
+	return 0;
+}
+
+static int loop_ir_node_from_error(struct dfavm_loop_ir *node, const struct ir_state *ir_st)
+{
+	struct bm mode_edge_bits;
+	size_t edge,grp,ngrp,mode_ind;
+	unsigned mode;
+	const struct ir_group *groups;
+
+	bm_clear(&node->no_edge_syms);
+
+	bm_setall(&mode_edge_bits);
+	{
+		size_t i, nerr;
+		const struct ir_range *ranges;
+
+		nerr = ir_st->u.error.error.n;
+		ranges = ir_st->u.error.error.ranges;
+		for (i=0; i < nerr; i++) {
+			bm_clearrange(&mode_edge_bits, ranges[i].start, ranges[i].end);
+			bm_setrange(&node->no_edge_syms, ranges[i].start, ranges[i].end);
+		}
+	}
+
+	ngrp = ir_st->u.error.n;
+	mode = ir_st->u.error.mode;
+	groups = ir_st->u.error.groups;
+
+	node->nedges = ngrp+1;
+	node->edges = calloc(ngrp+1, sizeof node->edges[0]);
+	if (node->edges == NULL) {
+		return -1;
+	}
+
+	mode_ind = ngrp;
+	for (grp=0, edge=0; grp < ngrp; grp++, edge++) {
+		unsigned to = groups[grp].to;
+		size_t i,nrange;
+
+		assert(to != mode);
+
+		if (mode_ind == ngrp && to > mode) {
+			/* mark the position and fill this in afterwards */
+			mode_ind = edge++;
+		}
+
+		node->edges[edge].dst = to;
+
+		nrange = groups[grp].n;
+		for (i=0; i < nrange; i++) {
+			unsigned char start, end;
+
+			start = groups[grp].ranges[i].start;
+			end   = groups[grp].ranges[i].end;
+
+			bm_setrange(&node->edges[edge].sym_bits, start, end);
+			bm_clearrange(&mode_edge_bits, start, end);
+		}
+	}
+
+	/* fill in the dominant edge... */
+	node->edges[mode_ind].dst = mode;
+	node->edges[mode_ind].sym_bits = mode_edge_bits;
+
+	return 0;
+}
+
+static int
+unsigned_cmp(const void *a, const void *b)
+{
+	const unsigned *ua = (const unsigned *)a;
+	const unsigned *ub = (const unsigned *)b;
+
+	return (*ua > *ub) - (*ua < *ub);
+}
+
+static int
+loop_edge_cmp(const void *a, const void *b)
+{
+	const struct dfavm_loop_ir_edge *ea = a;
+	const struct dfavm_loop_ir_edge *eb = b;
+
+	return (ea->dst > eb->dst) - (ea->dst < eb->dst);
+}
+
+static int loop_ir_node_from_table(struct dfavm_loop_ir *node, const struct ir_state *ir_st)
+{
+	unsigned states[FSM_SIGMA_COUNT];
+	unsigned i, nstates;
+
+	memcpy(states, ir_st->u.table.to, sizeof states);
+
+	// sort the table to determine the number of states
+	qsort(states, FSM_SIGMA_COUNT, sizeof states[0], unsigned_cmp);
+
+	// count states and remove duplicates
+	{
+		unsigned j;
+		for (i=1,j=0; i < FSM_SIGMA_COUNT; i++) {
+			assert(states[i] >= states[j]);
+
+			if (states[i] != states[j]) {
+				states[++j] = states[i];
+			}
+		}
+		nstates = j+1;
+	}
+
+	bm_clear(&node->no_edge_syms);
+
+	node->nedges = nstates;
+	node->edges = calloc(nstates, sizeof node->edges[0]);
+	if (node->edges == NULL) {
+		return -1;
+	}
+
+	/* initialize edges */
+	for (i=0; i < nstates; i++) {
+		node->edges[i].dst = states[i];
+	}
+
+	/* now set the edge bits */
+	{
+		unsigned i, last_to;
+		struct dfavm_loop_ir_edge *last_edge;
+
+		last_to   = states[0];
+		last_edge = &node->edges[0];
+		for (i=0; i < FSM_SIGMA_COUNT; i++) {
+			unsigned to;
+			struct dfavm_loop_ir_edge *edge;
+
+			to = ir_st->u.table.to[i];
+			if (to == last_to) {
+				edge = last_edge;
+			} else {
+				struct dfavm_loop_ir_edge key;
+
+				/* TODO: there's probably a more efficient way to do this than a bsearch */
+				key.dst = to;
+				edge = bsearch(&key, node->edges, nstates, sizeof node->edges[0], loop_edge_cmp);
+				assert(edge != NULL);
+
+				last_to = to;
+			}
+
+			bm_set(&edge->sym_bits, i);
+		}
+	}
+
+	return 0; /* not yet implemented */
+}
+
+static int
+loop_analysis_initialize(struct dfavm_loop_analysis *a, const struct ir *ir)
+{
+	size_t i,n;
+
+	n = ir->n;
+	a->nstates = n;
+	a->start = ir->start;
+	a->states = calloc(n, sizeof a->states[0]);
+	if (a->states == NULL) {
+		return -1;
+	}
+
+	for (i=0; i < n; i++) {
+		const struct ir_state *ir_st;
+		struct dfavm_loop_ir *lp_st;
+
+		ir_st = &ir->states[i];
+		lp_st = &a->states[i];
+
+		lp_st->isend = ir_st->isend;
+		lp_st->idom = a->nstates;
+
+		switch (ir_st->strategy) {
+		case IR_NONE:
+			lp_st->nedges = 0;
+			lp_st->edges = NULL;
+			bm_setall(&lp_st->no_edge_syms);
+			break;
+
+		case IR_SAME:
+			lp_st->nedges = 1;
+			lp_st->edges = calloc(1,sizeof lp_st->edges[0]);
+			if (lp_st->edges == NULL) {
+				return -1;
+			}
+
+			lp_st->edges[0].dst = ir_st->u.same.to;
+			bm_setall(&lp_st->edges[0].sym_bits);
+			bm_clear(&lp_st->no_edge_syms);
+			break;
+
+		case IR_COMPLETE:
+			if (loop_ir_node_from_groups(lp_st, ir_st->u.complete.n, ir_st->u.complete.groups) != 0) {
+				return -1;
+			}
+			break;
+
+		case IR_PARTIAL:
+			if (loop_ir_node_from_groups(lp_st, ir_st->u.partial.n, ir_st->u.partial.groups) != 0) {
+				return -1;
+			}
+			break;
+
+		case IR_DOMINANT:
+			if (loop_ir_node_from_dominant(lp_st, ir_st) != 0) {
+				return -1;
+			}
+			break;
+
+		case IR_ERROR:
+			if (loop_ir_node_from_error(lp_st, ir_st) != 0) {
+				return -1;
+			}
+			break;
+
+		case IR_TABLE:
+			if (loop_ir_node_from_table(lp_st, ir_st) != 0) {
+				return -1;
+			}
+			break;
+
+		}
+
+		{
+			struct bm check;
+			size_t i;
+
+			bm_clear(&check);
+			bm_or(&check, &lp_st->no_edge_syms);
+
+			for (i=0; i < lp_st->nedges; i++) {
+				struct bm intersect = check;
+				assert(bm_and(&intersect, &lp_st->edges[i].sym_bits) == 0);
+
+				bm_or(&check, &lp_st->edges[i].sym_bits);
+			}
+
+			assert(bm_isallset(&check));
+		}
+	}
+
+	return 0;
+}
+
+
+struct loop_analysis_edge {
+	unsigned src;
+	unsigned dst;
+};
+
+struct loop_analysis_predecessor_edges {
+	unsigned *offsets;
+	struct loop_analysis_edge *edges;
+};
+
+static int
+pred_edge_cmp(const void *a, const void *b)
+{
+	const struct loop_analysis_edge *ea = a;
+	const struct loop_analysis_edge *eb = b;
+
+	if (ea->dst != eb->dst) {
+		return (ea->dst > eb->dst) - (ea->dst < eb->dst);
+	}
+
+	return (ea->src > eb->src) - (ea->src < eb->src);
+}
+
+/* builds a table of predecessor edges.  This allows us to lookup edges
+ * in the graph by their destination so we can quickly look up the
+ * predecessors of a node.  Here, the predecessors of node N is the 
+ * set of all nodes with a edge that points to N.
+ *
+ * To do this, we construct an array of src->dst edges from the original
+ * graph, and order them by (dst,src).  We then construct a table of
+ * offsets into this array, so all edges that end on node N can be found
+ * in the list between offsets[N] and offsets[N+1].
+ */
+static struct loop_analysis_predecessor_edges *
+build_pred_edges(struct dfavm_loop_analysis *a)
+{
+	static const struct loop_analysis_predecessor_edges zero;
+
+	size_t i, nedges, edge, edge_count;
+	struct loop_analysis_predecessor_edges *pred;
+	unsigned state;
+
+	/*
+	size_t num_edges, edge_index, state_edge_count, state_index;
+	uint32_t curr_asm_ind;
+	*/
+
+	/* count edges */
+	nedges = 0;
+	for (i=0; i < a->nstates; i++) {
+		nedges += a->states[i].nedges;
+	}
+
+	pred = malloc(sizeof *pred);
+	if (pred == NULL) {
+		return NULL;
+	}
+
+	*pred = zero;
+
+	pred->offsets = calloc(a->nstates+1, sizeof *pred->offsets);
+	if (pred->offsets == NULL) {
+		goto error;
+	}
+
+	// special case
+	if (nedges == 0) {
+		pred->edges = NULL;
+		pred->offsets[a->nstates] = 0;
+
+		return pred;
+	}
+
+	pred->edges = calloc(nedges, sizeof *pred->edges);
+	if (pred->edges == NULL) {
+		goto error;
+	}
+
+	edge = 0;
+	for (i=0; i < a->nstates; i++) {
+		size_t j;
+
+		for (j=0; j < a->states[i].nedges; j++) {
+			assert(edge < nedges);
+
+			pred->edges[edge].src = i;
+			pred->edges[edge].dst = a->states[i].edges[j].dst;
+			edge++;
+		}
+	}
+
+	assert(edge == nedges);
+
+	/* sort edges by destination */
+	qsort(&pred->edges[0], nedges, sizeof pred->edges[0], pred_edge_cmp);
+
+	/* count unique dests and setup offsets */
+	state = pred->edges[0].dst;
+	edge_count = 1;
+	for (edge = 1; edge < nedges; edge++) {
+		if (pred->edges[edge].dst != state) {
+			pred->offsets[1+state] = edge_count;
+			state = pred->edges[edge].dst;
+			edge_count = 1;
+		} else {
+			edge_count++;
+		}
+	}
+
+	pred->offsets[1+state] = edge_count;
+
+	/* offsets are a cumulative sum of the counts */
+	for (state=0; state < a->nstates; state++) {
+		pred->offsets[1+state] += pred->offsets[state];
+	}
+
+	/*
+	for (state_index=0; state_index < a->count+1; state_index++) {
+		printf("edge offset[%4zu] = %lu\n", state_index, (unsigned long)pred->offsets[state_index]);
+	}
+	*/
+
+	return pred;
+
+error:
+	if (pred != NULL) {
+		free(pred->offsets);
+		free(pred->edges);
+		free(pred);
+	}
+
+	return NULL;
+}
+
+static unsigned
+idom_intersect(const struct dfavm_loop_analysis *a, unsigned na, unsigned nb)
+{
+	while (na != nb) {
+		while (a->states[na].order < a->states[nb].order) {
+			na = a->states[na].idom;
+		}
+
+		while (a->states[nb].order < a->states[na].order) {
+			nb = a->states[nb].idom;
+		}
+	}
+
+	return na;
+}
+
+#if 0
+static void
+print_all_states(const struct dfavm_assembler_ir *a);
+#endif /* 0 */
+
+/* This is from "A Simple, Fast Dominance Algorithm" by Cooper, et al.
+ * https://www.cs.rice.edu/~keith/EMBED/dom.pdf
+ *
+ * It's very easy to code, and often very fast, but still has a worst
+ * case of O(N^2).  We should eventually replace this with Lengauer-Tarjan
+ * which has a worst case of O(N log N).
+ */
+static int
+identify_idoms(struct dfavm_loop_analysis *a)
+{
+	struct loop_analysis_predecessor_edges *pred_edges = NULL;
+	struct {
+		unsigned node;
+		size_t edge;
+	} *stack;
+
+	unsigned *ordered;
+
+	unsigned start;
+	size_t i, iter;
+
+	// struct dfavm_op_ir *op, **ordered, **stack, *start;
+	uint32_t ordered_top, stack_top;
+	bool has_changed;
+	int ret;
+
+	ret = -1;
+
+	stack = NULL;
+	ordered = NULL;
+
+	/* allocate temporary structures */
+	pred_edges = build_pred_edges(a);
+	if (pred_edges == NULL) {
+		goto cleanup;
+	}
+
+	ordered = calloc(a->nstates, sizeof *ordered);
+	if (ordered == NULL) {
+		goto cleanup;
+	}
+
+	stack = calloc(a->nstates, sizeof *stack);
+	if (stack == NULL) {
+		goto cleanup;
+	}
+
+	/* clear visited bit, set idom to NULL */
+	for (i=0; i < a->nstates; i++) {
+		a->states[i].idom = a->nstates;
+		a->states[i].isvisited = 0;
+	}
+
+	start = a->start;
+
+	stack[0].node = start;
+	stack[0].edge = 0;
+	stack_top = 1;
+
+	ordered_top = 0;
+
+	a->states[start].isvisited = 1;
+
+	/* We need to traverse nodes by reverse postorder (the same
+	 * as topological sorted order).
+	 *
+	 * To do this, we order the nodes by their postorder using a
+	 * depth-first search, and adding nodes to the ordered list
+	 * after we have finished traversing their edges.
+	 */
+	while (stack_top > 0) {
+		unsigned node, unvisited;
+		size_t edge;
+
+		assert(stack_top > 0);
+		assert(stack_top <= a->nstates);
+
+		node = stack[stack_top-1].node;
+		edge = stack[stack_top-1].edge;
+
+		assert(node < a->nstates);
+		assert(edge <= a->states[node].nedges);
+		assert(a->states[node].isvisited);
+
+		unvisited = a->nstates;
+		for (; edge < a->states[node].nedges; edge++) {
+			unsigned dst;
+
+			dst = a->states[node].edges[edge].dst;
+			assert(dst < a->nstates);
+
+			if (!a->states[dst].isvisited) {
+				unvisited = dst;
+				break;
+			}
+		}
+
+		if (unvisited < a->nstates) {
+			assert(edge < a->states[node].nedges);
+			assert(stack_top < a->nstates);
+
+			a->states[unvisited].isvisited = 1;
+
+			stack[stack_top-1].edge = edge+1;
+			stack[stack_top].node = unvisited;
+			stack[stack_top].edge = 0;
+			stack_top++;
+		} else {
+			assert(ordered_top < a->nstates);
+
+			a->states[node].order = ordered_top;
+			ordered[ordered_top++] = node;
+			stack_top--;
+		}
+	}
+
+	/* Now that we have the nodes in reverse postorder and a list
+	 * of predecessor edges, we can proceed quickly...
+	 */
+	a->states[start].idom = start;
+
+	/*
+	dump_loop_analysis(a);
+	*/
+
+	/* iterate until the sets no longer change */
+	for (has_changed = true, iter = 0; has_changed; iter++) {
+		uint32_t ind;
+
+		/*
+		fprintf(stderr, "---[ iter %lu ]---\n", iter);
+		*/
+		has_changed = false;
+
+		// iterate in reverse postorder
+		for (ind = ordered_top; ind > 0; ind--) {
+			unsigned node;
+
+			node = ordered[ind-1];
+			if (node != start) {
+				const unsigned ei0 = pred_edges->offsets[node+0];
+				const unsigned ei1 = pred_edges->offsets[node+1];
+
+				unsigned ei, new_idom;
+
+				/*
+				fprintf(stderr, "node: %u[order:%u] idom=%u:%p\n",
+					node, a->states[node].order,
+					a->states[node].idom,
+					(void *)((a->states[node].idom < a->nstates) ? &a->states[a->states[node].idom] : NULL));
+				fprintf(stderr, "  - offsets: %lu ... %lu\n",
+					(unsigned long)ei0, (unsigned long)ei1);
+				*/
+
+				new_idom = a->nstates;
+				for (ei=ei0; ei < ei1; ei++) {
+					unsigned pred;
+
+					assert(pred_edges->edges[ei].dst == node);
+
+					pred = pred_edges->edges[ei].src;
+					/*
+					fprintf(stderr, "  - pred: %u[order:%u] idom=%u:%p\n",
+						pred, a->states[pred].order,
+						a->states[pred].idom,
+						(void *)((a->states[pred].idom < a->nstates) ? &a->states[a->states[pred].idom] : NULL));
+					*/
+
+					if (a->states[pred].idom == a->nstates) {
+						continue;
+					}
+
+					if (new_idom == a->nstates) {
+						new_idom = pred;
+					} else {
+						/*
+						fprintf(stderr, "  - intersect(%u[order:%u], %u[order:%u])\n",
+							new_idom, a->states[new_idom].order,
+							pred, a->states[pred].order);
+						*/
+
+						new_idom = idom_intersect(a,pred,new_idom);
+					}
+
+					assert(new_idom < a->nstates);
+					/*
+					fprintf(stderr, "  - new_idom = %u[order:%u]\n",
+						new_idom, a->states[new_idom].order);
+					*/
+				}
+
+				assert(new_idom < a->nstates);
+
+				if (a->states[node].idom != new_idom) {
+					a->states[node].idom = new_idom;
+					/*
+					fprintf(stderr, "  * new_idom = %u[order:%u]\n",
+						new_idom, a->states[new_idom].order);
+					*/
+					has_changed = true;
+				}
+			}
+		}
+	}
+
+	/* debug dump of dominators */
+
+	/*
+	dump_loop_analysis(a);
+
+	fprintf(stderr, "--[ idoms ]--\n");
+	{
+		unsigned i;
+		for (i=0; i < ordered_top; i++) {
+			unsigned st = ordered[i];
+			fprintf(stderr, "%6u[order:%6u] idom %u\n",
+				st, a->states[st].order, a->states[st].idom);
+		}
+	}
+	*/
+
+	/* return success! */
+	ret = 0;
+
+cleanup:
+	if (pred_edges != NULL) {
+		free(pred_edges->offsets);
+		free(pred_edges->edges);
+		free(pred_edges);
+	}
+
+	free(ordered);
+	free(stack);
+
+	/*
+	for (op=a->linked; op != NULL; op=op->next) {
+		op->visited = 0;
+		op->index = 0;
+	}
+	*/
+
+	return ret;
+}
+
+static bool
+dominates(const struct dfavm_loop_analysis *a, unsigned node, unsigned dom)
+{
+	unsigned idom;
+
+	assert(node < a->nstates);
+	assert(dom  < a->nstates);
+
+	idom = a->states[node].idom;
+
+	/* struct dfavm_op_ir *node; */
+	if (idom == dom) {
+		return true;
+	}
+
+	for (;;) {
+		unsigned idom_idom = a->states[idom].idom;
+
+		if (idom == idom_idom) {
+			break;
+		}
+
+		if (idom == dom) {
+			return true;
+		}
+
+		idom = idom_idom;
+	}
+
+	return idom == dom;
+}
+
+struct loop_entry {
+	unsigned head;
+	unsigned tail;
+	const struct dfavm_loop_ir_edge *edge;
+};
+
+struct loop_array {
+	size_t len;
+	size_t cap;
+
+	struct loop_entry *entries;
+};
+
+static int
+cmp_loop(const void *a, const void *b)
+{
+	const struct loop_entry *la = a;
+	const struct loop_entry *lb = b;
+
+	if (la->head == lb->head) {
+		return (la->tail > lb->tail) - (la->tail < lb->tail);
+	}
+
+	return (la->head > lb->head) - (la->head < lb->head);
+}
+
+static void
+free_loops(struct loop_array *l)
+{
+	if (l != NULL) {
+		free(l->entries);
+		free(l);
+	}
+}
+
+static int
+add_loop(struct loop_array *l, unsigned head, unsigned tail, const struct dfavm_loop_ir_edge *edge)
+{
+	assert(l != NULL);
+	if (l->len >= l->cap) {
+		size_t new_cap;
+		struct loop_entry *new_entries;
+
+		if (l->cap < 16) {
+			new_cap = 16;
+		} else if (l->cap < 2048) {
+			new_cap = 2*l->cap;
+		} else {
+			new_cap = l->cap + l->cap/2;
+		}
+
+		new_entries = realloc(l->entries, new_cap * sizeof *new_entries);
+		if (new_entries == NULL) {
+			return 0;
+		}
+
+		l->cap = new_cap;
+		l->entries = new_entries;
+	}
+
+	assert(l->len < l->cap);
+	assert(l->entries != NULL);
+
+	l->entries[l->len].head = head;
+	l->entries[l->len].tail = tail;
+	l->entries[l->len].edge = edge;
+
+	l->len++;
+
+	return 1;
+}
+
+static struct loop_array *
+identify_loops(struct dfavm_loop_analysis *a)
+{
+	size_t i;
+	struct loop_array *loops;
+
+	loops = malloc(sizeof *loops);
+	if (loops == NULL) {
+		return NULL;
+	}
+
+	loops->entries = NULL;
+	loops->len = loops->cap = 0;
+
+	/* index member is not set until after optimizations.
+	 * we borrow it here to ensure that loops are ordered
+	 */
+
+	for (i = 0; i < a->nstates; i++) {
+		size_t j;
+
+		for (j = 0; j < a->states[i].nedges; j++) {
+			unsigned dst = a->states[i].edges[j].dst;
+
+			// look for natural loops (edges to dominators
+			// or self-loops (edges to the same state)
+			if (dominates(a, i, dst) || dst == i) {
+				if (!add_loop(loops, dst, i, &a->states[i].edges[j])) {
+					goto error;
+				}
+			}
+		}
+	}
+
+	if (loops->len > 0) {
+		qsort(loops->entries, loops->len, sizeof loops->entries[0], cmp_loop);
+	}
+
+	return loops;
+
+error:
+	free_loops(loops);
+	return NULL;
+}
+
+#if 0
+static int
+optimize_loops(struct dfavm_assembler_ir *a)
+{
+	struct ir_loop *loops;
+
+	/* identify immediate dominators */
+	if (identify_idoms(a) < 0) {
+		return -1;
+	}
+
+	/* identify natural loops */
+	loops = identify_loops(a);
+	if (loops == NULL) {
+		return -1;
+	}
+
+	dump_states(stdout, a);
+	if (loops->len > 0) {
+		size_t i;
+		printf("---[ loops: %zu ]---\n", loops->len);
+		for (i=0; i < loops->len; i++) {
+			printf("[%4zu] head %4lu:%p  tail %4lu:%p\n", i,
+				(unsigned long)loops->entries[i].head->asm_index, (void *)loops->entries[i].head,
+				(unsigned long)loops->entries[i].tail->asm_index, (void *)loops->entries[i].tail);
+		}
+	} else {
+		printf("\nno loops.\n\n");
+	}
+
+	/* analyze natural loops:
+	 * - single-character chokepoints
+	 * - fixed string portions
+	 * - multiple fixed string portions
+	 */
+
+	free_loops(loops);
+
+	return 0;
+}
+
+#endif /* 0 */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+static int
+loop_analysis_analyze(struct dfavm_loop_analysis *a)
+{
+	struct loop_array *loops;
+
+	/* identify immediate dominators */
+	if (identify_idoms(a) < 0) {
+		return -1;
+	}
+
+	/* identify natural loops */
+	loops = identify_loops(a);
+	if (loops == NULL) {
+		return -1;
+	}
+
+	dump_loop_analysis(a);
+
+	if (loops->len > 0) {
+		size_t i, i0;
+		fprintf(stderr, "---[ loops: %zu ]---\n", loops->len);
+
+		unsigned head;
+		struct bm common;
+
+		i0 = 0;
+		head = a->nstates;
+		bm_clear(&common);
+
+		for (i=0; i < loops->len; i++) {
+			if (i == 0 || loops->entries[i].head != head) {
+				if (i != 0) {
+					fprintf(stderr, "[----] head %u:  %zu loops, common edges: ", head, i-i0);
+					print_sym_set(&common, stderr);
+					fprintf(stderr, "\n");
+				}
+
+				i0   = i;
+				head = loops->entries[i].head;
+
+				bm_setall(&common);
+			}
+
+			bm_and(&common, &loops->entries[i].edge->sym_bits);
+
+			fprintf(stderr, "[%4zu] head %4u  tail %4u%s ",
+				i, loops->entries[i].head, loops->entries[i].tail,
+				(loops->entries[i].head == loops->entries[i].tail) ? " SELF" : "");
+
+			print_sym_set(&loops->entries[i].edge->sym_bits, stderr);
+			fprintf(stderr, "\n");
+		}
+
+		fprintf(stderr, "[----] head %u:  %zu loops, common edges: ", head, i-i0);
+		print_sym_set(&common, stderr);
+		fprintf(stderr, "\n");
+	} else {
+		printf("\nno loops.\n\n");
+	}
+
+	free_loops(loops);
+
+	/* todo:
+	 * 2) identify loops
+	 * 3) find mergeable loop exits
+	 */
+
+	return 0;
+}
+
+static void
+loop_analysis_finalize(struct dfavm_loop_analysis *a)
+{
+	if (a->nstates > 0) {
+		size_t i;
+
+		for (i=0; i < a->nstates; i++) {
+			free(a->states[i].edges);
+		}
+	}
+
+	free(a->states);
+
+	a->states = NULL;
+	a->nstates = 0;
+	a->start = 0;
+}
+
 int
 dfavm_compile_ir(struct dfavm_assembler_ir *a, const struct ir *ir, struct fsm_vm_compile_opts opts)
 {
+	struct dfavm_loop_analysis loop_analysis;
+
+	if (loop_analysis_initialize(&loop_analysis, ir) != 0) {
+		return 0;
+	}
+
+	if (loop_analysis_analyze(&loop_analysis) != 0) {
+		return 0;
+	}
+
+	loop_analysis_finalize(&loop_analysis);
+
 	a->nstates = ir->n;
 	a->start = ir->start;
 
@@ -1623,7 +2764,7 @@ dfavm_compile_ir(struct dfavm_assembler_ir *a, const struct ir *ir, struct fsm_v
 
 	/* basic optimizations */
 	if (opts.flags & FSM_VM_COMPILE_OPTIM) {
-		optimize_loops(a);
+		// optimize_loops(a);
 		eliminate_unnecessary_branches(a);
 	}
 
