@@ -7,6 +7,13 @@
 #ifndef FSM_INTERNAL_VM_H
 #define FSM_INTERNAL_VM_H
 
+#include <limits.h>
+
+#include <print/esc.h>
+#include <adt/bitmap.h>
+
+#include "../internal.h"
+
 #define DEBUG_ENCODING     0
 #define DEBUG_VM_EXECUTION 0
 #define DEBUG_VM_OPCODES   0
@@ -59,6 +66,32 @@ enum dfavm_op_dest {
 };
 
 #define DFAVM_NOSTATE (~0U)
+
+struct dfavm_loop_ir;
+struct dfavm_loop_ir_edge {
+	unsigned dst;
+	struct bm sym_bits;
+};
+
+struct dfavm_loop_ir {
+	size_t nedges;
+	struct dfavm_loop_ir_edge *edges;
+	// struct dfavm_loop_ir *idom;
+	unsigned idom;
+	unsigned order;
+
+	// list of symbols which have no edge from the current state
+	struct bm no_edge_syms;
+
+	unsigned int isend:1;
+	unsigned int isvisited:1;
+};
+
+struct dfavm_loop_analysis {
+	size_t nstates;
+	size_t start;
+	struct dfavm_loop_ir *states;
+};
 
 struct dfavm_op_ir {
 	struct dfavm_op_ir *next;
