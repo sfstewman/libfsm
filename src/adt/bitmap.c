@@ -32,6 +32,47 @@ bm_set(struct bm *bm, size_t i)
 	bm->map[i / CHAR_BIT] |=  (1 << i % CHAR_BIT);
 }
 
+void
+bm_setrange(struct bm *bm, size_t imin, size_t imax)
+{
+	size_t i;
+
+	assert(bm != NULL);
+	assert(imin <= UCHAR_MAX);
+	assert(imax <= UCHAR_MAX);
+	assert(imin <= imax);
+
+	/* TODO: there's a far more efficient way to do this */
+	for (i=imin; i <= imax; i++) {
+		bm_set(bm,i);
+	}
+}
+
+void
+bm_clearbit(struct bm *bm, size_t i)
+{
+	assert(bm != NULL);
+	assert(i <= UCHAR_MAX);
+
+	bm->map[i / CHAR_BIT] &= ~(1 << i % CHAR_BIT);
+}
+
+void
+bm_clearrange(struct bm *bm, size_t imin, size_t imax)
+{
+	size_t i;
+
+	assert(bm != NULL);
+	assert(imin <= UCHAR_MAX);
+	assert(imax <= UCHAR_MAX);
+	assert(imin <= imax);
+
+	/* TODO: there's a far more efficient way to do this */
+	for (i=imin; i <= imax; i++) {
+		bm_clearbit(bm,i);
+	}
+}
+
 size_t
 bm_next(const struct bm *bm, int i, int value)
 {
@@ -73,6 +114,58 @@ bm_count(const struct bm *bm)
 	return count;
 }
 
+int
+bm_isallset(const struct bm *bm)
+{
+	size_t n;
+
+	for (n = 0; n < sizeof bm->map; n++) {
+		if (bm->map[n] != UCHAR_MAX) {
+			return 0;
+		}
+	}
+
+	return 1;
+}
+
+int
+bm_isanyset(const struct bm *bm)
+{
+	size_t n;
+
+	for (n = 0; n < sizeof bm->map; n++) {
+		if (bm->map[n] != 0) {
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
+void
+bm_or(struct bm *bm, const struct bm *bm0)
+{
+	size_t n;
+
+	for (n = 0; n < sizeof bm->map; n++) {
+		bm->map[n] |= bm0->map[n];
+	}
+}
+
+int
+bm_and(struct bm *bm, const struct bm *bm0)
+{
+	size_t n;
+	int any = 0;
+
+	for (n = 0; n < sizeof bm->map; n++) {
+		bm->map[n] &= bm0->map[n];
+		any |= bm->map[n];
+	}
+
+	return any;
+}
+
 void
 bm_clear(struct bm *bm)
 {
@@ -81,6 +174,18 @@ bm_clear(struct bm *bm)
 	assert(bm != NULL);
 
 	*bm = bm_empty;
+}
+
+void
+bm_setall(struct bm *bm)
+{
+	size_t i;
+
+	assert(bm != NULL);
+
+	for (i=0; i < sizeof bm->map / sizeof bm->map[0]; i++) {
+		bm->map[i] = (1<<CHAR_BIT)-1;
+	}
 }
 
 void
