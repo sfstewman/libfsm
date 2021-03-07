@@ -87,10 +87,13 @@ struct dfavm_loop_ir {
 	unsigned int isvisited:1;
 };
 
+struct loop_analysis_predecessor_edges;
 struct dfavm_loop_analysis {
 	size_t nstates;
 	size_t start;
 	struct dfavm_loop_ir *states;
+
+	struct loop_analysis_predecessor_edges *pred_edges;
 };
 
 struct dfavm_op_ir {

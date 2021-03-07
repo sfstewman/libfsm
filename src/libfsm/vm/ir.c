@@ -944,541 +944,6 @@ eliminate_unnecessary_branches(struct dfavm_assembler_ir *a)
 	} while (count > 0);
 }
 
-#if 0
-struct ir_edge {
-	struct dfavm_op_ir *src;
-	struct dfavm_op_ir *dst;
-};
-
-struct ir_predecessor_edges {
-	uint32_t *offsets;
-	struct ir_edge *edges;
-};
-
-static int
-pred_edge_cmp(const void *a, const void *b)
-{
-	const struct ir_edge *ea = a;
-	const struct ir_edge *eb = b;
-
-	if (ea->dst != eb->dst) {
-		return (ea->dst->asm_index > eb->dst->asm_index) - (ea->dst->asm_index < eb->dst->asm_index);
-	}
-
-	return (ea->src->asm_index > eb->src->asm_index) - (ea->src->asm_index < eb->src->asm_index);
-}
-
-static struct ir_predecessor_edges *
-build_pred_edges(struct dfavm_assembler_ir *a)
-{
-	static const struct ir_predecessor_edges zero;
-
-	struct dfavm_op_ir *op;
-	struct ir_predecessor_edges *pred;
-	size_t num_edges, edge_index, state_edge_count, state_index;
-	uint32_t curr_asm_ind;
-
-	/* count edges */
-	num_edges = 0;
-	for (op = a->linked; op != NULL; op = op->next) {
-		if (op->next != NULL) {
-			num_edges++;
-		}
-
-		if (op->instr == VM_OP_BRANCH) {
-			num_edges++;
-		}
-	}
-
-	/*
-	printf("found %zu edges\n", num_edges);
-	*/
-
-	pred = malloc(sizeof *pred);
-	if (pred == NULL) {
-		return NULL;
-	}
-
-	*pred = zero;
-
-	pred->offsets = calloc(a->count+1, sizeof *pred->offsets);
-	if (pred->offsets == NULL) {
-		goto error;
-	}
-
-	pred->edges = calloc(num_edges, sizeof *pred->edges);
-	if (pred->edges == NULL) {
-		goto error;
-	}
-
-	edge_index = 0;
-	/* fill in edges */
-	for (op = a->linked; op != NULL; op = op->next) {
-		if (op->next != NULL) {
-			assert(edge_index < num_edges);
-
-			pred->edges[edge_index].src = op;
-			pred->edges[edge_index].dst = op->next;
-			edge_index++;
-		}
-
-		if (op->instr == VM_OP_BRANCH) {
-			assert(edge_index < num_edges);
-
-			pred->edges[edge_index].src = op;
-			pred->edges[edge_index].dst = op->u.br.dest_arg;
-			edge_index++;
-		}
-	}
-
-	assert(edge_index == num_edges);
-
-	/* sort edges */
-	qsort(&pred->edges[0], num_edges, sizeof *pred->edges, pred_edge_cmp);
-
-	/* count unique dests and setup offsets */
-	curr_asm_ind = pred->edges[0].dst->asm_index;
-	state_edge_count = 1;
-
-	for (edge_index=1; edge_index < num_edges; edge_index++) {
-		if (pred->edges[edge_index].dst->asm_index != curr_asm_ind) {
-			pred->offsets[1+curr_asm_ind] = state_edge_count;
-			curr_asm_ind = pred->edges[edge_index].dst->asm_index;
-			state_edge_count = 1;
-		} else {
-			state_edge_count++;
-		}
-	}
-
-	pred->offsets[1+curr_asm_ind] = state_edge_count;
-
-	for (state_index=0; state_index < a->count; state_index++) {
-		pred->offsets[state_index+1] += pred->offsets[state_index];
-	}
-
-	/*
-	for (state_index=0; state_index < a->count+1; state_index++) {
-		printf("edge offset[%4zu] = %lu\n", state_index, (unsigned long)pred->offsets[state_index]);
-	}
-	*/
-
-	return pred;
-
-error:
-	if (pred != NULL) {
-		free(pred->offsets);
-		free(pred->edges);
-		free(pred);
-	}
-
-	return NULL;
-}
-
-static struct dfavm_op_ir *
-idom_intersect(struct dfavm_op_ir *a, struct dfavm_op_ir *b)
-{
-	while (a != b) {
-		while (a->index < b->index) {
-			a = a->idom;
-		}
-
-		while (b->index < a->index) {
-			b = b->idom;
-		}
-	}
-
-	return a;
-}
-
-static void
-print_all_states(const struct dfavm_assembler_ir *a);
-
-/* TODO: this method is very naive.  replace with a better method! */
-static int
-identify_idoms(struct dfavm_assembler_ir *a)
-{
-	struct ir_predecessor_edges *pred_edges = NULL;
-	struct dfavm_op_ir *op, **ordered, **stack, *start;
-	uint32_t ordered_top, stack_top;
-	bool has_changed;
-	int ret;
-
-	ret = -1;
-
-	/* allocate temporary structures */
-	pred_edges = build_pred_edges(a);
-	if (pred_edges == NULL) {
-		goto cleanup;
-	}
-
-	ordered = calloc(2*a->count, sizeof *ordered);
-	if (ordered == NULL) {
-		goto cleanup;
-	}
-
-	stack = &ordered[a->count];
-
-	/* clear visited bit, set idom to NULL */
-	for (op=a->linked; op != NULL; op=op->next) {
-		op->idom = NULL;
-		op->visited = 0;
-	}
-
-	start = a->linked;
-
-	stack[0]  = start;
-	stack_top = 1;
-	ordered_top = 0;
-	start->visited = 1;
-	while (stack_top > 0) {
-		struct dfavm_op_ir *node;
-
-		assert(stack_top > 0);
-
-		node = stack[stack_top-1];
-
-		assert(node != NULL);
-		assert(node->visited);
-
-		if (node->next != NULL && !node->next->visited) {
-			assert(stack_top < a->count);
-			stack[stack_top++] = node->next;
-			node->next->visited = 1;
-		} else if (node->instr == VM_OP_BRANCH && node->u.br.dest_arg != NULL && !node->u.br.dest_arg->visited) {
-			struct dfavm_op_ir *dest;
-
-			dest = node->u.br.dest_arg;
-			assert(dest != NULL);
-			assert(!dest->visited);
-
-			stack[stack_top++] = dest;
-			dest->visited = 1;
-		} else {
-			assert(ordered_top < a->count);
-
-			/* index member is only assigned after
-			 * optimizations.  We can borrow it for now
-			 */
-			node->index = ordered_top;
-			ordered[ordered_top++] = node;
-			stack_top--;
-		}
-	}
-
-	start->idom = start;
-
-	/*
-	dump_states(stdout, a);
-	*/
-
-	unsigned long iter = 0;
-	/* iterate until the sets no longer change */
-	for (has_changed = true; has_changed; iter++) {
-		uint32_t ind;
-
-		/*
-		printf("---[ iter %lu ]---\n", iter);
-		*/
-		has_changed = false;
-
-		// iterate in reverse postorder
-		for (ind = ordered_top; ind > 0; ind--) {
-			struct dfavm_op_ir *node;
-
-			node = ordered[ind-1];
-			if (node != start) {
-				const uint32_t idx = node->asm_index;
-				const uint32_t ei0 = pred_edges->offsets[idx+0];
-				const uint32_t ei1 = pred_edges->offsets[idx+1];
-
-				struct dfavm_op_ir *new_idom;
-				uint32_t ei;
-
-				/*
-				printf("node: %lu:%p idom=%lu:%p\n",
-					(unsigned long)node->index, (void *)node,
-					(node->idom) ?  (unsigned long)node->idom->index : 0UL,
-					(node->idom) ?  (void *)node->idom : NULL);
-				printf("  - asm_index = %lu, offsets: %lu ... %lu\n",
-					(unsigned long)idx, (unsigned long)ei0, (unsigned long)ei1);
-				*/
-
-				new_idom = NULL;
-				for (ei=ei0; ei < ei1; ei++) {
-					struct dfavm_op_ir *pred;
-
-					assert(pred_edges->edges[ei].dst == node);
-
-					pred = pred_edges->edges[ei].src;
-					/*
-					printf("  - pred: %lu:%p idom=%lu:%p\n",
-						(unsigned long)pred->index, (void *)pred,
-						pred->idom ? (unsigned long)pred->idom->index : 0UL,
-						pred->idom ? (void *)pred->idom : NULL);
-					*/
-
-					if (pred->idom == NULL) {
-						continue;
-					}
-
-					if (new_idom == NULL) {
-						new_idom = pred;
-					} else {
-						/*
-						printf("  - intersect(%lu:%p, %lu:%p)\n",
-							(unsigned long)new_idom->index, (void *)new_idom,
-							(unsigned long)pred->index, (void *)pred);
-						*/
-
-						new_idom = idom_intersect(pred,new_idom);
-					}
-					/*
-					printf("  - new_idom = %lu:%p\n",
-						(unsigned long)new_idom->index, (void *)new_idom);
-					*/
-				}
-
-				assert(new_idom != NULL);
-
-				if (node->idom != new_idom) {
-					node->idom = new_idom;
-					/*
-					printf("  * new_idom = %lu:%p\n",
-						(unsigned long)new_idom->index, (void *)new_idom);
-					*/
-					has_changed = true;
-				}
-			}
-		}
-	}
-
-	/*
-	dump_states(stdout, a);
-	*/
-
-	/* debug dump of dominators */
-	/*
-	printf("--[ idoms ]--\n");
-	{
-		uint32_t i;
-		for (i=0; i < ordered_top; i++) {
-			printf("[%6lu:%p] idom %6lu:%p\n",
-				(unsigned long)ordered[i]->index, (void *)ordered[i],
-				(unsigned long)ordered[i]->idom->index, (void *)ordered[i]->idom);
-		}
-	}
-	*/
-
-	/* return success! */
-	ret = 0;
-
-cleanup:
-	if (pred_edges != NULL) {
-		free(pred_edges->offsets);
-		free(pred_edges->edges);
-		free(pred_edges);
-	}
-
-	free(ordered);
-
-	for (op=a->linked; op != NULL; op=op->next) {
-		op->visited = 0;
-		op->index = 0;
-	}
-
-	return ret;
-}
-
-static bool
-dominates(struct dfavm_op_ir *node, struct dfavm_op_ir *dom)
-{
-	struct dfavm_op_ir *idom;
-
-	idom = node->idom;
-
-	/* struct dfavm_op_ir *node; */
-	if (idom == dom) {
-		return true;
-	}
-
-	while (idom != idom->idom) {
-		if (idom == dom) {
-			return true;
-		}
-
-		idom = idom->idom;
-	}
-
-	return idom == dom;
-}
-
-struct ir_loop_entry {
-	struct dfavm_op_ir *head;
-	struct dfavm_op_ir *tail;
-};
-
-struct ir_loop {
-	size_t len;
-	size_t cap;
-
-	struct ir_loop_entry *entries;
-};
-
-static int
-cmp_loop(const void *a, const void *b)
-{
-	const struct ir_loop_entry *la = a;
-	const struct ir_loop_entry *lb = b;
-
-	if (la->head == lb->head) {
-		return (la->tail->index > lb->tail->index) - (la->tail->index < lb->tail->index);
-	}
-
-	return (la->head->index > lb->head->index) - (la->head->index < lb->head->index);
-}
-
-static void
-free_loops(struct ir_loop *l)
-{
-	if (l != NULL) {
-		free(l->entries);
-		free(l);
-	}
-}
-
-static int
-add_loop(struct ir_loop *l, struct dfavm_op_ir *head, struct dfavm_op_ir *tail)
-{
-	assert(l != NULL);
-	if (l->len >= l->cap) {
-		size_t new_cap;
-		struct ir_loop_entry *new_entries;
-
-		if (l->cap < 16) {
-			new_cap = 16;
-		} else if (l->cap < 2048) {
-			new_cap = 2*l->cap;
-		} else {
-			new_cap = l->cap + l->cap/2;
-		}
-
-		new_entries = realloc(l->entries, new_cap * sizeof *new_entries);
-		if (new_entries == NULL) {
-			return 0;
-		}
-
-		l->cap = new_cap;
-		l->entries = new_entries;
-	}
-
-	assert(l->len < l->cap);
-	assert(l->entries != NULL);
-
-	l->entries[l->len].head = head;
-	l->entries[l->len].tail = tail;
-
-	l->len++;
-
-	return 1;
-}
-
-static struct ir_loop *
-identify_loops(struct dfavm_assembler_ir *a)
-{
-	struct dfavm_op_ir *op;
-	struct ir_loop *loops;
-	unsigned ind;
-
-	loops = malloc(sizeof *loops);
-	if (loops == NULL) {
-		return NULL;
-	}
-
-	loops->entries = NULL;
-	loops->len = loops->cap = 0;
-
-	/* index member is not set until after optimizations.
-	 * we borrow it here to ensure that loops are ordered
-	 */
-
-	for (ind=0,op=a->linked; op != NULL; ind++,op=op->next) {
-		op->index = ind;
-	}
-
-	for (op=a->linked; op != NULL; op=op->next) {
-		if (op->instr == VM_OP_BRANCH) {
-			struct dfavm_op_ir *dest;
-
-			dest = op->u.br.dest_arg;
-			if (dominates(op, dest)) {
-				if (!add_loop(loops, dest, op)) {
-					goto error;
-				}
-			}
-		}
-	}
-
-	if (loops->len > 0) {
-		qsort(loops->entries, loops->len, sizeof loops->entries[0], cmp_loop);
-	}
-
-	for (op=a->linked; op != NULL; op=op->next) {
-		op->index = 0;
-	}
-
-	return loops;
-
-error:
-	free_loops(loops);
-
-	for (op=a->linked; op != NULL; op=op->next) {
-		op->index = 0;
-	}
-
-	return NULL;
-}
-
-static int
-optimize_loops(struct dfavm_assembler_ir *a)
-{
-	struct ir_loop *loops;
-
-	/* identify immediate dominators */
-	if (identify_idoms(a) < 0) {
-		return -1;
-	}
-
-	/* identify natural loops */
-	loops = identify_loops(a);
-	if (loops == NULL) {
-		return -1;
-	}
-
-	dump_states(stdout, a);
-	if (loops->len > 0) {
-		size_t i;
-		printf("---[ loops: %zu ]---\n", loops->len);
-		for (i=0; i < loops->len; i++) {
-			printf("[%4zu] head %4lu:%p  tail %4lu:%p\n", i,
-				(unsigned long)loops->entries[i].head->asm_index, (void *)loops->entries[i].head,
-				(unsigned long)loops->entries[i].tail->asm_index, (void *)loops->entries[i].tail);
-		}
-	} else {
-		printf("\nno loops.\n\n");
-	}
-
-	/* analyze natural loops:
-	 * - single-character chokepoints
-	 * - fixed string portions
-	 * - multiple fixed string portions
-	 */
-
-	free_loops(loops);
-
-	return 0;
-}
-#endif /* 0 */
-
 static void
 order_basic_blocks(struct dfavm_assembler_ir *a)
 {
@@ -2017,7 +1482,6 @@ loop_analysis_initialize(struct dfavm_loop_analysis *a, const struct ir *ir)
 	return 0;
 }
 
-
 struct loop_analysis_edge {
 	unsigned src;
 	unsigned dst;
@@ -2059,11 +1523,6 @@ build_pred_edges(struct dfavm_loop_analysis *a)
 	size_t i, nedges, edge, edge_count;
 	struct loop_analysis_predecessor_edges *pred;
 	unsigned state;
-
-	/*
-	size_t num_edges, edge_index, state_edge_count, state_index;
-	uint32_t curr_asm_ind;
-	*/
 
 	/* count edges */
 	nedges = 0;
@@ -2168,11 +1627,6 @@ idom_intersect(const struct dfavm_loop_analysis *a, unsigned na, unsigned nb)
 	return na;
 }
 
-#if 0
-static void
-print_all_states(const struct dfavm_assembler_ir *a);
-#endif /* 0 */
-
 /* This is from "A Simple, Fast Dominance Algorithm" by Cooper, et al.
  * https://www.cs.rice.edu/~keith/EMBED/dom.pdf
  *
@@ -2205,10 +1659,9 @@ identify_idoms(struct dfavm_loop_analysis *a)
 	ordered = NULL;
 
 	/* allocate temporary structures */
-	pred_edges = build_pred_edges(a);
-	if (pred_edges == NULL) {
-		goto cleanup;
-	}
+	pred_edges = a->pred_edges;
+
+	assert(pred_edges != NULL);
 
 	ordered = calloc(a->nstates, sizeof *ordered);
 	if (ordered == NULL) {
@@ -2398,12 +1851,6 @@ identify_idoms(struct dfavm_loop_analysis *a)
 	ret = 0;
 
 cleanup:
-	if (pred_edges != NULL) {
-		free(pred_edges->offsets);
-		free(pred_edges->edges);
-		free(pred_edges);
-	}
-
 	free(ordered);
 	free(stack);
 
@@ -2424,6 +1871,11 @@ dominates(const struct dfavm_loop_analysis *a, unsigned node, unsigned dom)
 
 	assert(node < a->nstates);
 	assert(dom  < a->nstates);
+
+	if (node == dom) {
+		/* every node dominates itself */
+		return true;
+	}
 
 	idom = a->states[node].idom;
 
@@ -2449,10 +1901,104 @@ dominates(const struct dfavm_loop_analysis *a, unsigned node, unsigned dom)
 	return idom == dom;
 }
 
+static void
+print_idom_tree_inner(FILE *f, const unsigned *tree, const unsigned *offsets, unsigned node, unsigned indent)
+{
+	unsigned i0,i1, i;
+
+	if (indent > 0) {
+		size_t j;
+		for (j=0; j < 2*indent; j++) {
+			putc(' ', f);
+		}
+	}
+
+	fprintf(f, "- node %u\n", node);
+
+	i0 = offsets[node];
+	i1 = offsets[node+1];
+
+	assert(i0 <= i1);
+
+	for (i=i0; i < i1; i++) {
+		print_idom_tree_inner(f, tree, offsets, tree[i], indent+1);
+	}
+}
+
+static void
+print_idom_tree(const struct dfavm_loop_analysis *a, FILE *f)
+{
+	unsigned *tree, *offsets, *work;
+	size_t i;
+	unsigned root;
+
+	assert(a != NULL);
+	assert(a->nstates > 0);
+
+	/* tree[0] is the root.
+	 * counts[0] is the number of children
+	 *
+	 * offsets[0]
+	 *
+	 */
+	tree = calloc(3*a->nstates+1, sizeof *tree);
+	if (tree == NULL) {
+		perror("allocating idom tree working space");
+		return;
+	}
+
+	work = &tree[a->nstates];
+	offsets = &tree[2*a->nstates];
+
+	root = a->nstates;
+
+	for (i=0; i < a->nstates; i++) {
+		unsigned idom;
+
+		assert(a->states[i].idom < a->nstates);
+
+		idom = a->states[i].idom;
+		if (idom != i) {
+			offsets[idom+1]++;
+		}
+	}
+
+	for (i=0; i < a->nstates; i++) {
+		offsets[i+1] += offsets[i];
+	}
+
+	assert(offsets[a->nstates] == a->nstates-1);
+
+	for (i=0; i < a->nstates; i++) {
+		unsigned idom;
+		size_t ind;
+
+		assert(a->states[i].idom < a->nstates);
+
+		idom = a->states[i].idom;
+
+		if (idom == i) {
+			root = i;
+		} else {
+			ind = offsets[idom] + work[idom];
+			tree[ind] = i;
+			work[idom]++;
+		}
+	}
+
+	assert(root < a->nstates);
+
+	print_idom_tree_inner(f, tree, offsets, root, 0);
+	free(tree);
+}
+
 struct loop_entry {
 	unsigned head;
 	unsigned tail;
 	const struct dfavm_loop_ir_edge *edge;
+
+	unsigned n;
+	unsigned *states;
 };
 
 struct loop_array {
@@ -2484,7 +2030,7 @@ free_loops(struct loop_array *l)
 	}
 }
 
-static int
+static struct loop_entry *
 add_loop(struct loop_array *l, unsigned head, unsigned tail, const struct dfavm_loop_ir_edge *edge)
 {
 	assert(l != NULL);
@@ -2502,7 +2048,7 @@ add_loop(struct loop_array *l, unsigned head, unsigned tail, const struct dfavm_
 
 		new_entries = realloc(l->entries, new_cap * sizeof *new_entries);
 		if (new_entries == NULL) {
-			return 0;
+			return NULL;
 		}
 
 		l->cap = new_cap;
@@ -2516,9 +2062,679 @@ add_loop(struct loop_array *l, unsigned head, unsigned tail, const struct dfavm_
 	l->entries[l->len].tail = tail;
 	l->entries[l->len].edge = edge;
 
-	l->len++;
+	l->entries[l->len].n = 0;
+	l->entries[l->len].states = NULL;
 
-	return 1;
+	return &l->entries[l->len++];
+}
+
+/* DFAs can produce a lot of loops that look like this:
+ *
+ *
+ *      +--------------+
+ *      |              |
+ *      |   +-----+    |
+ *      |  /      |    |
+ *      v L       |    |
+ * 0 -> 1 -> 2 -> 3 -> 4 -> 5
+ *      ^    |
+ *      |    |
+ *      +----+
+ *
+ * Where the back edges from states 2, 3, and 4 lead to state 1.
+ *
+ * This indicates that states 1-4 are really part of one loop, and
+ * in terms of flow control, we could rewrite this as:
+ *
+ *      +--------------+
+ *      |              |
+ *      |    +----+--> X
+ *      |    |    |    |
+ *      v    |    |    |
+ * 0 -> 1 -> 2 -> 3 -> 4 -> 5
+ *
+ * where X marks an exit state which always transitions to 1.
+ *
+ * NOTE: this doesn't preclude exits to other states, which we will
+ *       handle separately.
+ *
+ * The goal is to identify this kind of mergeable loop.  The following
+ * conditions should hold:
+ *
+ * Loop (A,B) can be merged into loop (A,C) if:
+ * 1) The heads are the same (A)
+ * 2) A path exists from B -> C _that does not contain A_
+ * 3) Every node along that path is dominated by A.
+ *
+ * So... how do we find the states?  First, start with the identified
+ * loops.
+ *
+ * For each unique head H in the list of loops (H,T):
+ *
+ * - Initialize a set of states associated with H.  Add H to the set.
+ * - Perform a limited BFS traversal of the graph starting with H.
+ *
+ *   Edges src -> dst are only traversed if dst is dominated by H, but
+ *   is not H.
+ *
+ *   Add each node N in the traversal to the set of states associated
+ *   with H
+ *
+ */
+
+static int
+cmp_unsigned(const void *a, const void *b)
+{
+	const unsigned *ua = a, *ub = b;
+	return (*ua > *ub) - (*ua < *ub);
+}
+
+struct loop_info {
+	size_t nloops;
+	size_t loops_cap;
+	struct loop_info **loops;
+
+	size_t nstates;
+	unsigned *states;
+
+	unsigned head;
+
+	unsigned pseudo:1;
+};
+
+static bool
+loop_info_contains(const struct loop_info *l, unsigned node)
+{
+	assert(l != NULL);
+
+	if (l->nstates == 0) {
+		return false;
+	}
+
+	return bsearch(&node, &l->states[0], l->nstates, sizeof l->states[0], cmp_unsigned) != NULL;
+}
+
+static int
+loop_info_add_subloop(struct loop_info *parent, struct loop_info *child)
+{
+	assert(parent != NULL);
+	assert(child  != NULL);
+
+	assert(parent != child);
+
+	assert(parent->pseudo ||  loop_info_contains(parent, child->head));
+	assert(parent->pseudo || !loop_info_contains(child, parent->head));
+	assert(!child->pseudo);
+
+	if (parent->nloops >= parent->loops_cap) {
+		size_t new_cap;
+		struct loop_info **new_loops;
+
+		if (parent->loops_cap < 16) {
+			new_cap = 16;
+		} else if (parent->loops_cap < 1024) {
+			new_cap = 2*parent->loops_cap;
+		} else {
+			new_cap = parent->loops_cap + parent->loops_cap/2;
+		}
+
+		assert(parent->nloops < new_cap);
+
+		new_loops = realloc(parent->loops, new_cap * sizeof parent->loops[0]);
+		if (new_loops == NULL) {
+			return -1;
+		}
+
+		parent->loops_cap = new_cap;
+		parent->loops     = new_loops;
+	}
+
+	assert(parent->nloops < parent->loops_cap);
+	assert(parent->loops != NULL);
+
+	parent->loops[parent->nloops++] = child;
+
+	return 0;
+}
+
+struct loop_info_proxy {
+	const struct loop_info *info;
+	size_t indx;
+	unsigned node;
+};
+
+static int
+cmp_loop_info_proxy(const void *a, const void *b)
+{
+	const struct loop_info_proxy *pa = a, *pb = b;
+
+	assert(pa != NULL);
+	assert(pb != NULL);
+
+	assert(pa->info != NULL);
+	assert(pb->info != NULL);
+
+	assert(pa->info == pb->info);
+
+	// assert(pa->node < pa->info->nstates);
+	// assert(pb->node < pa->info->nstates);
+
+	if (loop_info_contains(&pa->info[pa->indx], pb->node)) {
+		return -1;
+	} else if (loop_info_contains(&pb->info[pb->indx], pa->node)) {
+		return 1;
+	} else {
+		return 0;
+	}
+}
+
+static void
+print_indent(FILE *f, int indent)
+{
+	int i;
+	for (i=0; i < indent; i++) {
+		fputs("  ", f);
+	}
+}
+
+static void
+print_loop_tree(const struct loop_info *info, FILE *f, int indent)
+{
+	size_t i;
+
+	assert(info != NULL);
+
+	print_indent(f,indent);
+	if (info->pseudo) {
+		fprintf(f, "> PSEUDO: %zu states, %zu inner loops\n", info->nstates, info->nloops);
+	} else {
+		fprintf(f, "> head %u: %zu states, %zu inner loops\n", info->head, info->nstates, info->nloops);
+	}
+
+	assert(info->nstates == 0 || info->states != NULL);
+
+	if (info->nstates > 0) {
+		print_indent(f,indent+1);
+		fprintf(f, "- states:");
+		for (i=0; i < info->nstates; i++) {
+			fprintf(f, " %u", info->states[i]);
+			if ((i+1) % 10 == 0) {
+				fprintf(f, "\n");
+				print_indent(f,indent+1);
+				fprintf(f, "         ");
+			}
+		}
+		fprintf(f,"\n");
+	}
+
+	fprintf(f,"\n");
+
+	assert(info->nloops == 0 || info->loops != NULL);
+	assert(info->nloops <= info->loops_cap);
+
+	assert(
+		(info->loops_cap == 0 && info->loops == NULL) ||
+		(info->loops_cap >  0 && info->loops != NULL)
+	);
+
+	for (i=0; i < info->nloops; i++) {
+		assert(info->loops[i] != NULL);
+		print_loop_tree(info->loops[i], f, indent+1);
+	}
+}
+
+static int 
+loop_info_initialize(struct loop_info *li, unsigned head, unsigned *states, size_t nstates)
+{
+	size_t nuniq;
+
+	qsort(&states[0], nstates, sizeof states[0], cmp_unsigned);
+
+	{
+		/* remove any duplicates */
+		size_t i,j;
+
+		for (i=1, j=0; i < nstates; i++) {
+			if (states[i] != states[j]) {
+				j++;
+				states[j] = states[i];
+			}
+		}
+
+		nuniq = j+1;
+	}
+
+	li->states = malloc(nuniq * sizeof li->states[0]);
+	if (li->states == NULL) {
+		return -1;
+	}
+
+	li->head = head;
+	memcpy(&li->states[0], &states[0], nuniq * sizeof states[0]);
+	li->nstates = nuniq;
+	li->pseudo = 0;
+
+	return 0;
+}
+
+static struct loop_info *
+gather_loop_states(const struct dfavm_loop_analysis *a, const struct loop_array *loops)
+{
+	unsigned *queue;
+	unsigned *states;
+	size_t *visited;
+	size_t i;
+	unsigned head;
+	size_t info_count, state_top;
+	struct loop_info *root;
+	struct loop_analysis_predecessor_edges *pred_edges;
+
+	struct loop_info *info;
+
+	assert(a != NULL);
+	assert(a->pred_edges != NULL);
+	assert(a->nstates > 0);
+	assert(a->states != NULL);
+
+	root = NULL;
+
+	queue   = calloc(a->nstates, sizeof *queue);
+	states  = calloc(a->nstates, sizeof *states);
+	visited = calloc(a->nstates, sizeof *visited);
+	info    = calloc(loops->len+1, sizeof *info);
+
+	if (queue == NULL || states == NULL || visited == NULL || info == NULL) {
+		goto cleanup;
+	}
+
+	pred_edges = a->pred_edges;
+
+	/* reserve the first entry for a pseudo-node that holds all of
+	 * the non-loop states
+	 *
+	 * We'll fill these states in later...
+	 */
+
+	info[0].head    = a->nstates;
+	info[0].pseudo  = 1;
+	info[0].states  = NULL;
+	info[0].nstates = 0;
+
+	info_count = 1;
+
+	state_top = 0;
+	head = 0;
+	for (i=0; i < loops->len; i++) {
+		size_t qtop;
+		unsigned tail;
+
+		if (i == 0) {
+			head = loops->entries[i].head;
+		} else if (loops->entries[i].head != head) {
+			assert(info_count < loops->len+1);
+
+			if (loop_info_initialize(&info[info_count++], head, &states[0], state_top) < 0) {
+				goto cleanup;
+			}
+
+			head = loops->entries[i].head;
+			state_top = 0;
+		}
+
+		tail = loops->entries[i].tail;
+
+		/*
+		fprintf(stderr, ">> i = %zu, head = %u, tail = %u\n", i,head,tail);
+		*/
+
+		if (visited[tail] == head+1) {
+			/*
+			fprintf(stderr, "   SKIPPING: visited[tail = %u] = %zu\n", tail, visited[tail]);
+			*/
+			continue;
+		}
+
+		qtop = 0;
+		queue[qtop++] = tail;
+		visited[tail] = head+1;
+
+		/*
+		{
+			size_t k;
+			fprintf(stderr, "visited:");
+			for (k=0; k < a->nstates; k++) {
+				fprintf(stderr, " %zu%s", visited[k], visited[k] == head+1 ? "*" : "" );
+			}
+			fprintf(stderr, "\n");
+		}
+		*/
+
+		while (qtop > 0) {
+			unsigned node;
+			unsigned ei0, ei1, ei;
+
+			node = queue[--qtop];
+
+			/*
+			fprintf(stderr, "  ]] node = %u\n", node);
+			*/
+
+			assert(node < a->nstates);
+			assert(state_top < a->nstates);
+
+			states[state_top++] = node;
+
+			/*
+			{
+				size_t k;
+				fprintf(stderr, "states:");
+				for (k=0; k < a->nstates; k++) {
+					if (k == state_top) {
+						fprintf(stderr, " | ");
+					}
+
+					fprintf(stderr, " %u", states[k]);
+				}
+				fprintf(stderr, "\n");
+			}
+			*/
+
+			ei0 = pred_edges->offsets[node+0];
+			ei1 = pred_edges->offsets[node+1];
+
+			/*
+			fprintf(stderr, "    }} visited[%u] = %zu\n", node, visited[node]);
+			*/
+			for (ei = ei0; ei < ei1; ei++) {
+				unsigned pred;
+				assert(pred_edges->edges[ei].dst == node);
+
+				pred = pred_edges->edges[ei].src;
+
+				assert(pred < a->nstates);
+
+				/*
+				fprintf(stderr, "    }} edge %u -> %u", node, pred);
+				*/
+
+				if (dominates(a, pred, head) && visited[pred] != head+1) {
+					assert(qtop < a->nstates);
+
+					queue[qtop++] = pred;
+					visited[pred] = head+1;
+					/*
+					fprintf(stderr, " enqueued");
+					*/
+				}
+
+				/*
+				fprintf(stderr, "\n");
+				*/
+			}
+		}
+	}
+
+	if (state_top > 0) {
+		if (loop_info_initialize(&info[info_count++], head, &states[0], state_top) < 0) {
+			goto cleanup;
+		}
+	}
+
+
+	/* find any nodes that are not part of loops */
+	{
+		size_t state_top;
+
+		for (i=0; i < a->nstates; i++) {
+			visited[i] = 0;
+			states[i] = 0;
+		}
+
+		for (i=0; i < info_count; i++) {
+			size_t j;
+
+			for (j=0; j < info[i].nstates; j++) {
+				unsigned node = info[i].states[j];
+				visited[node] = 1;
+			}
+		}
+
+		/* Find unvisited nodes.  We can simultaneously reset
+		 * all visited values to zero. */
+		state_top = 0;
+		for (i=0; i < a->nstates; i++) {
+			if (visited[i] == 0) {
+				assert(state_top < a->nstates);
+				states[state_top++] = i;
+			}
+
+			visited[i] = 0;
+		}
+
+		/* Fill any states not in loops into the pseudo-node at
+		 * info[0]
+		 */
+		if (state_top > 0) {
+			fprintf(stderr, ">>> %zu nodes not in loops\n", state_top);
+
+			info[0].states = calloc(state_top, sizeof info[info_count].states[0]);
+			if (info[0].states == NULL) {
+				goto cleanup;
+			}
+
+			info[0].nstates = state_top;
+			memcpy(&info[0].states[0], &states[0], state_top * sizeof states[0]);
+		}
+	}
+
+	/*
+	fprintf(stderr, "----[ loop info (%zu items) ]----\n", info_count);
+	for (i=0; i < info_count; i++) {
+		size_t j;
+		fprintf(stderr, "[%4zu] head: %u  nstates: %zu\n", i, info[i].head, info[i].nstates);
+		for (j=0; j < info[i].nstates; j++) {
+			fprintf(stderr, "    state %u\n", info[i].states[j]);
+		}
+	}
+	*/
+
+	/* Create a tree of loop nodes
+	 *
+	 * The elements of info form a natural tree, but the current
+	 * representation is a bit indirect.  Each element of info has a
+	 * list of nodes it contains, but this includes all elements of
+	 * the tree below this node, not just its immediate children.
+	 *
+	 * To build the tree, we sort the elements of info (skipping the
+	 * pseudo node at info[0]) according to their "contains" order:
+	 *
+	 * A < B if A contains B.
+	 * A > B if B contains A.
+	 * A = B if neither contains the other.
+	 *
+	 * This results in a list where element j, j>i, cannot be a
+	 * parent loop of i, and must either be an inner loop of i or
+	 * unrelated to i.
+	 *
+	 * Importantly, if a loop is at position i, there can be no
+	 * further inner loops of that loop.
+	 *
+	 * We can then build the tree by starting at the right-most
+	 * loop in the sorted list and moving left-wards.
+	 *
+	 * We keep a list of active loops.  For each new loop
+	 * encountered L:
+	 *
+	 * 1. Find all active loops that are contained by L.  A loop is
+	 *    contained by L if its head state is in the list of states
+	 *    of L.
+	 *
+	 *    Add all active loops contained by L as inner loops in L and
+	 *    remove them from the list of active loops.
+	 *
+	 * 2. Add loop L to the active list.
+	 *
+	 * After the final element, the active nodes should be added to
+	 * the top-level pseudo-node.
+	 *
+	 *
+	 * FIXME: this seems pretty inefficient.  There must be a better
+	 * way.
+	 *
+	 */
+	if (info_count > 1) {
+		/* FIXME: there must be a better way ... */
+		struct loop_info_proxy *tree_elts;
+		size_t num_active;
+		size_t first_tombstone;
+
+		tree_elts = calloc(info_count-1, sizeof *tree_elts);
+		if (tree_elts == NULL) {
+			goto cleanup;
+		}
+
+		/*
+		fprintf(stderr, "----[ tree_elts ]----\n");
+		*/
+
+		for (i=0; i < info_count-1; i++) {
+			tree_elts[i].info = info;
+			tree_elts[i].indx = i+1;
+			tree_elts[i].node = info[i+1].head;
+
+			/*
+			fprintf(stderr, "[%4zu] %p %zu %u\n", i, (void *)info, i+1, info[i+1].head);
+			*/
+		}
+
+		qsort(tree_elts, info_count-1, sizeof tree_elts[0], cmp_loop_info_proxy);
+
+		/*
+		fprintf(stderr, "----[ sorted by container order ]----\n");
+		for (i=0; i < info_count-1; i++) {
+			fprintf(stderr, "[%4zu] loop index %zu, loop head %u\n",
+				i, tree_elts[i].indx, tree_elts[i].node);
+		}
+		*/
+
+		/* Use 'visited' to hold the active loop set.
+		 *
+		 * FIXME: This isn't great, but we're not using it for
+		 * anything, and we don't want to allocate more space.
+		 *
+		 * Here, the value states[i] indicates the index into
+		 * info.  The max index is info_count-1, so we use the
+		 * value info_count to indidate a tombstone.
+		 */
+
+		/* zero visited */
+		for (i=0; i < info_count; i++) {
+			visited[i] = 0;
+		}
+
+		num_active = 0;
+		first_tombstone = info_count;
+
+		/* iterate info[info_count] ... info[1].  Remember that
+		 * info[0] holds the pseudo node
+		 */
+		for (i=info_count-1; i > 0; i--) {
+			size_t j, new_loop;
+
+			new_loop = tree_elts[i-1].indx;
+			assert(num_active < info_count);
+
+			for (j=0; j < num_active; j++) {
+				size_t active_loop;
+
+				active_loop = visited[j];
+				if (active_loop < info_count && loop_info_contains(&info[new_loop], info[active_loop].head)) {
+					/* add as subloop */
+					if (loop_info_add_subloop(&info[new_loop], &info[active_loop]) < 0) {
+						goto cleanup;
+					}
+
+					/* removed from list */
+					visited[j] = info_count;
+					if (j < first_tombstone) {
+						first_tombstone = j;
+					}
+				}
+			}
+
+			j = (first_tombstone < info_count) ? first_tombstone : 0;
+			for (; j < num_active; j++) {
+				if (visited[j] == info_count) {
+					first_tombstone = info_count;
+					break;
+				}
+			}
+
+			if (j < num_active) {
+				visited[j] = new_loop;
+			} else {
+				assert(num_active < info_count);
+				visited[num_active++] = new_loop;
+			}
+
+			/*
+			fprintf(stderr, "\nvisited array for i=%zu, new_loop=%zu, num_active=%zu, first_tombstone=%zu\n",
+				i, new_loop, num_active, first_tombstone);
+
+			for (j=0; j < info_count; j++) {
+				fprintf(stderr, "  [%3zu] %zu%s%s\n",
+					j, visited[j],
+					j==num_active ? " A" : "",
+					j==first_tombstone ? " T" : "");
+			}
+			fprintf(stderr, "\n");
+			*/
+		}
+
+		/* gather up active nodes and add them to the root
+		 * pseudo-node
+		 */
+		for (i=0; i < num_active; i++) {
+			size_t loop = visited[i];
+			if (loop < info_count) {
+				if (loop_info_add_subloop(&info[0], &info[loop]) < 0) {
+					goto cleanup;
+				}
+			}
+		}
+
+		free(tree_elts);
+	}
+
+	/* print out of tree */
+	/*
+	fprintf(stderr, "\n---------------[ LOOP TREE ]---------------\n");
+	print_loop_tree(&info[0], stderr, 0);
+	fprintf(stderr, "\n\n");
+	*/
+
+	/* Build loop tree... */
+	(void)print_loop_tree;
+	(void)cmp_loop_info_proxy;
+	(void)loop_info_add_subloop;
+
+	root = &info[0];
+
+cleanup:
+	free(queue);
+	free(states);
+	free(visited);
+
+	if (root == NULL) {
+		for (i=0; i < info_count; i++) {
+			free(info[i].states);
+			free(info[i].loops);
+		}
+
+		free(info);
+	}
+
+	return root;
 }
 
 static struct loop_array *
@@ -2548,7 +2764,10 @@ identify_loops(struct dfavm_loop_analysis *a)
 			// look for natural loops (edges to dominators
 			// or self-loops (edges to the same state)
 			if (dominates(a, i, dst) || dst == i) {
-				if (!add_loop(loops, dst, i, &a->states[i].edges[j])) {
+				struct loop_entry *ent;
+
+				ent = add_loop(loops, dst, i, &a->states[i].edges[j]);
+				if (ent == NULL) {
 					goto error;
 				}
 			}
@@ -2566,76 +2785,67 @@ error:
 	return NULL;
 }
 
-#if 0
-static int
-optimize_loops(struct dfavm_assembler_ir *a)
+
+static void
+print_loops(const struct dfavm_loop_analysis *a, const struct loop_array *loops)
 {
-	struct ir_loop *loops;
+	size_t i, i0;
+	unsigned head;
+	struct bm common;
 
-	/* identify immediate dominators */
-	if (identify_idoms(a) < 0) {
-		return -1;
-	}
-
-	/* identify natural loops */
-	loops = identify_loops(a);
-	if (loops == NULL) {
-		return -1;
-	}
-
-	dump_states(stdout, a);
-	if (loops->len > 0) {
-		size_t i;
-		printf("---[ loops: %zu ]---\n", loops->len);
-		for (i=0; i < loops->len; i++) {
-			printf("[%4zu] head %4lu:%p  tail %4lu:%p\n", i,
-				(unsigned long)loops->entries[i].head->asm_index, (void *)loops->entries[i].head,
-				(unsigned long)loops->entries[i].tail->asm_index, (void *)loops->entries[i].tail);
-		}
-	} else {
+	if (loops->len == 0) {
 		printf("\nno loops.\n\n");
+		return;
 	}
 
-	/* analyze natural loops:
-	 * - single-character chokepoints
-	 * - fixed string portions
-	 * - multiple fixed string portions
-	 */
+	fprintf(stderr, "---[ loops: %zu ]---\n", loops->len);
 
-	free_loops(loops);
+	i0 = 0;
+	head = a->nstates;
+	bm_clear(&common);
 
-	return 0;
+	for (i=0; i < loops->len; i++) {
+		if (i == 0 || loops->entries[i].head != head) {
+			if (i != 0) {
+				fprintf(stderr, "[----] head %u:  %zu loops, common edges: ", head, i-i0);
+				print_sym_set(&common, stderr);
+				fprintf(stderr, "\n");
+			}
+
+			i0   = i;
+			head = loops->entries[i].head;
+
+			bm_setall(&common);
+		}
+
+		bm_and(&common, &loops->entries[i].edge->sym_bits);
+
+		fprintf(stderr, "[%4zu] head %4u  tail %4u%s ",
+				i, loops->entries[i].head, loops->entries[i].tail,
+				(loops->entries[i].head == loops->entries[i].tail) ? " SELF" : "");
+
+		print_sym_set(&loops->entries[i].edge->sym_bits, stderr);
+		fprintf(stderr, "\n");
+	}
+
+	fprintf(stderr, "[----] head %u:  %zu loops, common edges: ", head, i-i0);
+	print_sym_set(&common, stderr);
+	fprintf(stderr, "\n");
 }
-
-#endif /* 0 */
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
 static int
 loop_analysis_analyze(struct dfavm_loop_analysis *a)
 {
-	struct loop_array *loops;
+	int ret = -1;
+	struct loop_array *loop_list = NULL;
+	struct loop_info *loop_info = NULL;
+
+	a->pred_edges = build_pred_edges(a);
+	if (a->pred_edges == NULL) {
+		return -1;
+	}
 
 	/* identify immediate dominators */
 	if (identify_idoms(a) < 0) {
@@ -2643,61 +2853,53 @@ loop_analysis_analyze(struct dfavm_loop_analysis *a)
 	}
 
 	/* identify natural loops */
-	loops = identify_loops(a);
-	if (loops == NULL) {
+	loop_list = identify_loops(a);
+	if (loop_list == NULL) {
 		return -1;
 	}
 
+	/*
+	fprintf(stderr, "---[ idom tree ]---\n");
+	print_idom_tree(a, stderr);
+	fprintf(stderr, "\n\n");
+
 	dump_loop_analysis(a);
 
-	if (loops->len > 0) {
-		size_t i, i0;
-		fprintf(stderr, "---[ loops: %zu ]---\n", loops->len);
+	print_loops(a, loop_list);
+	*/
 
-		unsigned head;
-		struct bm common;
-
-		i0 = 0;
-		head = a->nstates;
-		bm_clear(&common);
-
-		for (i=0; i < loops->len; i++) {
-			if (i == 0 || loops->entries[i].head != head) {
-				if (i != 0) {
-					fprintf(stderr, "[----] head %u:  %zu loops, common edges: ", head, i-i0);
-					print_sym_set(&common, stderr);
-					fprintf(stderr, "\n");
-				}
-
-				i0   = i;
-				head = loops->entries[i].head;
-
-				bm_setall(&common);
-			}
-
-			bm_and(&common, &loops->entries[i].edge->sym_bits);
-
-			fprintf(stderr, "[%4zu] head %4u  tail %4u%s ",
-				i, loops->entries[i].head, loops->entries[i].tail,
-				(loops->entries[i].head == loops->entries[i].tail) ? " SELF" : "");
-
-			print_sym_set(&loops->entries[i].edge->sym_bits, stderr);
-			fprintf(stderr, "\n");
-		}
-
-		fprintf(stderr, "[----] head %u:  %zu loops, common edges: ", head, i-i0);
-		print_sym_set(&common, stderr);
-		fprintf(stderr, "\n");
-	} else {
-		printf("\nno loops.\n\n");
+	loop_info = gather_loop_states(a, loop_list);
+	if (loop_info == NULL) {
+		return -1;
 	}
 
-	free_loops(loops);
+	/* Now identify straight paths through the loops
+	 *
+	 * We're looking for three kinds of optimizations:
+	 *
+	 * 1) searching for whole words: 
+	 *
+	 * 1) situations where loops, or initial parts of loops, can be
+	 *    replaced by memchr, strspn, and strcspn
+	 *    
+	 *    (NB: this may be a better peephole optimization?)
+	 *
+	 *
+	 */
 
-	/* todo:
+	/* original todo:
 	 * 2) identify loops
 	 * 3) find mergeable loop exits
+	 *
+	 *
+	 * thoughts:
+	 * - is it helpful to identify nested loops?
+	 * - identify one or more "straight paths" through the loops
+	 * - identify "entangled" paths like /^.*(abc|def).*$/ and
+	 *   /^.*(abc|bcd).*$/
 	 */
+
+	free_loops(loops);
 
 	return 0;
 }
@@ -2714,6 +2916,12 @@ loop_analysis_finalize(struct dfavm_loop_analysis *a)
 	}
 
 	free(a->states);
+
+	if (a->pred_edges != NULL) {
+		free(a->pred_edges->offsets);
+		free(a->pred_edges->edges);
+		free(a->pred_edges);
+	}
 
 	a->states = NULL;
 	a->nstates = 0;
