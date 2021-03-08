@@ -2876,11 +2876,12 @@ print_loops(const struct dfavm_loop_analysis *a, const struct loop_array *loops)
 }
 
 static int
-loop_analysis_process_loop(struct dfavm_loop_analysis *a, const struct loop_tree_node *tree)
+loop_analysis_process_loop(struct dfavm_loop_analysis *a, const struct loop_tree_node *tree, int depth)
 {
 	assert(a    != NULL);
 	assert(tree != NULL);
 
+	print_indent(stderr, depth);
 	fprintf(stderr, "processing loop head: %u\n", tree->head);
 
 	/* process sub-loops */
@@ -2890,7 +2891,7 @@ loop_analysis_process_loop(struct dfavm_loop_analysis *a, const struct loop_tree
 		for (i=0; i < n; i++) {
 			assert(tree->loops != NULL);
 			assert(tree->loops[i] != NULL);
-			loop_analysis_process_loop(a, tree->loops[i]);
+			loop_analysis_process_loop(a, tree->loops[i], depth+1);
 		}
 	}
 
@@ -2898,10 +2899,48 @@ loop_analysis_process_loop(struct dfavm_loop_analysis *a, const struct loop_tree
 	if (!tree->pseudo) {
 		size_t i,n;
 		n = tree->nstates;
+
+		bool straight_path = true;
+
+		/* looking for a straight path through the loop
+		 *
+		 * initial approach is to count in-loop edges.
+		 * An in-loop edge is
+		 * - an edge from one state the loop to another
+		 * - that is not a back edge to the head of the loop
+		 *
+		 * So:
+		 * 1) if edge is back edge to head, ignore
+		 * 2) if edge is exit from the loop, ignore
+		 * 3) otherwise, count
+		 */
 		for (i=0; i < n; i++) {
+			unsigned st;
+			size_t j;
+			size_t inloop_edge_count = 0;
+
 			assert(tree->states != NULL);
 			assert(tree->states[i] < a->nstates);
+
+			st = tree->states[i];
+
+			for (j=0; j < a->states[st].nedges; j++) {
+				unsigned dst;
+				dst = a->states[st].edges[j].dst;
+
+				if (dst != tree->head && loop_tree_node_contains(tree, dst)) {
+					inloop_edge_count++;
+				}
+			}
+
+			if (inloop_edge_count > 1) {
+				straight_path = false;
+				break;
+			}
 		}
+
+		print_indent(stderr, depth);
+		fprintf(stderr, "  >>> straight path? %s\n", straight_path ? "true" : "false");
 	}
 
 	fprintf(stderr, "\n");
@@ -2990,7 +3029,7 @@ loop_analysis_analyze(struct dfavm_loop_analysis *a)
 		}
 	}
 
-	if (loop_analysis_process_loop(a, tree->root) < 0) {
+	if (loop_analysis_process_loop(a, tree->root, 0) < 0) {
 		goto cleanup;
 	}
 
