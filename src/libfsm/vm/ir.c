@@ -2129,10 +2129,10 @@ cmp_unsigned(const void *a, const void *b)
 	return (*ua > *ub) - (*ua < *ub);
 }
 
-struct loop_info {
+struct loop_tree_node {
 	size_t nloops;
 	size_t loops_cap;
-	struct loop_info **loops;
+	struct loop_tree_node **loops;
 
 	size_t nstates;
 	unsigned *states;
@@ -2142,8 +2142,39 @@ struct loop_info {
 	unsigned pseudo:1;
 };
 
+struct loop_tree {
+	size_t n;
+	struct loop_tree_node *root;
+};
+
+static void
+free_loop_tree(struct loop_tree *tree)
+{
+	size_t i,n;
+	struct loop_tree_node *nodes;
+
+	if (tree == NULL) {
+		return;
+	}
+
+	n = tree->n;
+	nodes = tree->root;
+	free(tree);
+
+	if (nodes == NULL) {
+		return;
+	}
+
+	for (i=0; i < n; i++) {
+		free(nodes[i].states);
+		free(nodes[i].loops);
+	}
+
+	free(nodes);
+}
+
 static bool
-loop_info_contains(const struct loop_info *l, unsigned node)
+loop_tree_node_contains(const struct loop_tree_node *l, unsigned node)
 {
 	assert(l != NULL);
 
@@ -2155,20 +2186,20 @@ loop_info_contains(const struct loop_info *l, unsigned node)
 }
 
 static int
-loop_info_add_subloop(struct loop_info *parent, struct loop_info *child)
+loop_tree_node_add_subloop(struct loop_tree_node *parent, struct loop_tree_node *child)
 {
 	assert(parent != NULL);
 	assert(child  != NULL);
 
 	assert(parent != child);
 
-	assert(parent->pseudo ||  loop_info_contains(parent, child->head));
-	assert(parent->pseudo || !loop_info_contains(child, parent->head));
+	assert(parent->pseudo ||  loop_tree_node_contains(parent, child->head));
+	assert(parent->pseudo || !loop_tree_node_contains(child, parent->head));
 	assert(!child->pseudo);
 
 	if (parent->nloops >= parent->loops_cap) {
 		size_t new_cap;
-		struct loop_info **new_loops;
+		struct loop_tree_node **new_loops;
 
 		if (parent->loops_cap < 16) {
 			new_cap = 16;
@@ -2197,31 +2228,31 @@ loop_info_add_subloop(struct loop_info *parent, struct loop_info *child)
 	return 0;
 }
 
-struct loop_info_proxy {
-	const struct loop_info *info;
+struct loop_tree_node_proxy {
+	const struct loop_tree_node *nodes;
 	size_t indx;
 	unsigned node;
 };
 
 static int
-cmp_loop_info_proxy(const void *a, const void *b)
+cmp_loop_tree_node_proxy(const void *a, const void *b)
 {
-	const struct loop_info_proxy *pa = a, *pb = b;
+	const struct loop_tree_node_proxy *pa = a, *pb = b;
 
 	assert(pa != NULL);
 	assert(pb != NULL);
 
-	assert(pa->info != NULL);
-	assert(pb->info != NULL);
+	assert(pa->nodes != NULL);
+	assert(pb->nodes != NULL);
 
-	assert(pa->info == pb->info);
+	assert(pa->nodes == pb->nodes);
 
-	// assert(pa->node < pa->info->nstates);
-	// assert(pb->node < pa->info->nstates);
+	// assert(pa->node < pa->nodes->nstates);
+	// assert(pb->node < pa->nodes->nstates);
 
-	if (loop_info_contains(&pa->info[pa->indx], pb->node)) {
+	if (loop_tree_node_contains(&pa->nodes[pa->indx], pb->node)) {
 		return -1;
-	} else if (loop_info_contains(&pb->info[pb->indx], pa->node)) {
+	} else if (loop_tree_node_contains(&pb->nodes[pb->indx], pa->node)) {
 		return 1;
 	} else {
 		return 0;
@@ -2238,26 +2269,26 @@ print_indent(FILE *f, int indent)
 }
 
 static void
-print_loop_tree(const struct loop_info *info, FILE *f, int indent)
+print_loop_tree_subtree(const struct loop_tree_node *nodes, FILE *f, int indent)
 {
 	size_t i;
 
-	assert(info != NULL);
+	assert(nodes != NULL);
 
 	print_indent(f,indent);
-	if (info->pseudo) {
-		fprintf(f, "> PSEUDO: %zu states, %zu inner loops\n", info->nstates, info->nloops);
+	if (nodes->pseudo) {
+		fprintf(f, "> PSEUDO: %zu states, %zu inner loops\n", nodes->nstates, nodes->nloops);
 	} else {
-		fprintf(f, "> head %u: %zu states, %zu inner loops\n", info->head, info->nstates, info->nloops);
+		fprintf(f, "> head %u: %zu states, %zu inner loops\n", nodes->head, nodes->nstates, nodes->nloops);
 	}
 
-	assert(info->nstates == 0 || info->states != NULL);
+	assert(nodes->nstates == 0 || nodes->states != NULL);
 
-	if (info->nstates > 0) {
+	if (nodes->nstates > 0) {
 		print_indent(f,indent+1);
 		fprintf(f, "- states:");
-		for (i=0; i < info->nstates; i++) {
-			fprintf(f, " %u", info->states[i]);
+		for (i=0; i < nodes->nstates; i++) {
+			fprintf(f, " %u", nodes->states[i]);
 			if ((i+1) % 10 == 0) {
 				fprintf(f, "\n");
 				print_indent(f,indent+1);
@@ -2269,22 +2300,31 @@ print_loop_tree(const struct loop_info *info, FILE *f, int indent)
 
 	fprintf(f,"\n");
 
-	assert(info->nloops == 0 || info->loops != NULL);
-	assert(info->nloops <= info->loops_cap);
+	assert(nodes->nloops == 0 || nodes->loops != NULL);
+	assert(nodes->nloops <= nodes->loops_cap);
 
 	assert(
-		(info->loops_cap == 0 && info->loops == NULL) ||
-		(info->loops_cap >  0 && info->loops != NULL)
+		(nodes->loops_cap == 0 && nodes->loops == NULL) ||
+		(nodes->loops_cap >  0 && nodes->loops != NULL)
 	);
 
-	for (i=0; i < info->nloops; i++) {
-		assert(info->loops[i] != NULL);
-		print_loop_tree(info->loops[i], f, indent+1);
+	for (i=0; i < nodes->nloops; i++) {
+		assert(nodes->loops[i] != NULL);
+		print_loop_tree_subtree(nodes->loops[i], f, indent+1);
 	}
 }
 
+static void
+print_loop_tree(const struct loop_tree *tree, FILE *f)
+{
+	assert(tree != NULL);
+	assert(tree->root != NULL);
+
+	print_loop_tree_subtree(tree->root, f, 0);
+}
+
 static int 
-loop_info_initialize(struct loop_info *li, unsigned head, unsigned *states, size_t nstates)
+loop_tree_node_initialize(struct loop_tree_node *li, unsigned head, unsigned *states, size_t nstates)
 {
 	size_t nuniq;
 
@@ -2317,7 +2357,7 @@ loop_info_initialize(struct loop_info *li, unsigned head, unsigned *states, size
 	return 0;
 }
 
-static struct loop_info *
+static struct loop_tree *
 gather_loop_states(const struct dfavm_loop_analysis *a, const struct loop_array *loops)
 {
 	unsigned *queue;
@@ -2325,25 +2365,32 @@ gather_loop_states(const struct dfavm_loop_analysis *a, const struct loop_array 
 	size_t *visited;
 	size_t i;
 	unsigned head;
-	size_t info_count, state_top;
-	struct loop_info *root;
+	size_t tree_node_count, state_top;
+	struct loop_tree *tree;
 	struct loop_analysis_predecessor_edges *pred_edges;
 
-	struct loop_info *info;
+	struct loop_tree_node *nodes;
+
+	static const struct loop_tree tree_zero;
 
 	assert(a != NULL);
 	assert(a->pred_edges != NULL);
 	assert(a->nstates > 0);
 	assert(a->states != NULL);
 
-	root = NULL;
+	tree = malloc(sizeof *tree);
+	if (tree == NULL) {
+		return NULL;
+	}
+
+	*tree = tree_zero;
 
 	queue   = calloc(a->nstates, sizeof *queue);
 	states  = calloc(a->nstates, sizeof *states);
 	visited = calloc(a->nstates, sizeof *visited);
-	info    = calloc(loops->len+1, sizeof *info);
+	nodes   = calloc(loops->len+1, sizeof *nodes);
 
-	if (queue == NULL || states == NULL || visited == NULL || info == NULL) {
+	if (queue == NULL || states == NULL || visited == NULL || nodes == NULL) {
 		goto cleanup;
 	}
 
@@ -2355,12 +2402,12 @@ gather_loop_states(const struct dfavm_loop_analysis *a, const struct loop_array 
 	 * We'll fill these states in later...
 	 */
 
-	info[0].head    = a->nstates;
-	info[0].pseudo  = 1;
-	info[0].states  = NULL;
-	info[0].nstates = 0;
+	nodes[0].head    = a->nstates;
+	nodes[0].pseudo  = 1;
+	nodes[0].states  = NULL;
+	nodes[0].nstates = 0;
 
-	info_count = 1;
+	tree_node_count = 1;
 
 	state_top = 0;
 	head = 0;
@@ -2371,9 +2418,9 @@ gather_loop_states(const struct dfavm_loop_analysis *a, const struct loop_array 
 		if (i == 0) {
 			head = loops->entries[i].head;
 		} else if (loops->entries[i].head != head) {
-			assert(info_count < loops->len+1);
+			assert(tree_node_count < loops->len+1);
 
-			if (loop_info_initialize(&info[info_count++], head, &states[0], state_top) < 0) {
+			if (loop_tree_node_initialize(&nodes[tree_node_count++], head, &states[0], state_top) < 0) {
 				goto cleanup;
 			}
 
@@ -2475,7 +2522,7 @@ gather_loop_states(const struct dfavm_loop_analysis *a, const struct loop_array 
 	}
 
 	if (state_top > 0) {
-		if (loop_info_initialize(&info[info_count++], head, &states[0], state_top) < 0) {
+		if (loop_tree_node_initialize(&nodes[tree_node_count++], head, &states[0], state_top) < 0) {
 			goto cleanup;
 		}
 	}
@@ -2490,11 +2537,11 @@ gather_loop_states(const struct dfavm_loop_analysis *a, const struct loop_array 
 			states[i] = 0;
 		}
 
-		for (i=0; i < info_count; i++) {
+		for (i=0; i < tree_node_count; i++) {
 			size_t j;
 
-			for (j=0; j < info[i].nstates; j++) {
-				unsigned node = info[i].states[j];
+			for (j=0; j < nodes[i].nstates; j++) {
+				unsigned node = nodes[i].states[j];
 				visited[node] = 1;
 			}
 		}
@@ -2512,41 +2559,41 @@ gather_loop_states(const struct dfavm_loop_analysis *a, const struct loop_array 
 		}
 
 		/* Fill any states not in loops into the pseudo-node at
-		 * info[0]
+		 * nodes[0]
 		 */
 		if (state_top > 0) {
 			fprintf(stderr, ">>> %zu nodes not in loops\n", state_top);
 
-			info[0].states = calloc(state_top, sizeof info[info_count].states[0]);
-			if (info[0].states == NULL) {
+			nodes[0].states = calloc(state_top, sizeof nodes[tree_node_count].states[0]);
+			if (nodes[0].states == NULL) {
 				goto cleanup;
 			}
 
-			info[0].nstates = state_top;
-			memcpy(&info[0].states[0], &states[0], state_top * sizeof states[0]);
+			nodes[0].nstates = state_top;
+			memcpy(&nodes[0].states[0], &states[0], state_top * sizeof states[0]);
 		}
 	}
 
 	/*
-	fprintf(stderr, "----[ loop info (%zu items) ]----\n", info_count);
-	for (i=0; i < info_count; i++) {
+	fprintf(stderr, "----[ loop nodes (%zu items) ]----\n", tree_node_count);
+	for (i=0; i < tree_node_count; i++) {
 		size_t j;
-		fprintf(stderr, "[%4zu] head: %u  nstates: %zu\n", i, info[i].head, info[i].nstates);
-		for (j=0; j < info[i].nstates; j++) {
-			fprintf(stderr, "    state %u\n", info[i].states[j]);
+		fprintf(stderr, "[%4zu] head: %u  nstates: %zu\n", i, nodes[i].head, nodes[i].nstates);
+		for (j=0; j < nodes[i].nstates; j++) {
+			fprintf(stderr, "    state %u\n", nodes[i].states[j]);
 		}
 	}
 	*/
 
 	/* Create a tree of loop nodes
 	 *
-	 * The elements of info form a natural tree, but the current
-	 * representation is a bit indirect.  Each element of info has a
+	 * The elements of nodes form a natural tree, but the current
+	 * representation is a bit indirect.  Each element of nodes has a
 	 * list of nodes it contains, but this includes all elements of
 	 * the tree below this node, not just its immediate children.
 	 *
-	 * To build the tree, we sort the elements of info (skipping the
-	 * pseudo node at info[0]) according to their "contains" order:
+	 * To build the tree, we sort the elements of nodes (skipping the
+	 * pseudo node at nodes[0]) according to their "contains" order:
 	 *
 	 * A < B if A contains B.
 	 * A > B if B contains A.
@@ -2582,13 +2629,13 @@ gather_loop_states(const struct dfavm_loop_analysis *a, const struct loop_array 
 	 * way.
 	 *
 	 */
-	if (info_count > 1) {
+	if (tree_node_count > 1) {
 		/* FIXME: there must be a better way ... */
-		struct loop_info_proxy *tree_elts;
+		struct loop_tree_node_proxy *tree_elts;
 		size_t num_active;
 		size_t first_tombstone;
 
-		tree_elts = calloc(info_count-1, sizeof *tree_elts);
+		tree_elts = calloc(tree_node_count-1, sizeof *tree_elts);
 		if (tree_elts == NULL) {
 			goto cleanup;
 		}
@@ -2597,21 +2644,21 @@ gather_loop_states(const struct dfavm_loop_analysis *a, const struct loop_array 
 		fprintf(stderr, "----[ tree_elts ]----\n");
 		*/
 
-		for (i=0; i < info_count-1; i++) {
-			tree_elts[i].info = info;
+		for (i=0; i < tree_node_count-1; i++) {
+			tree_elts[i].nodes = nodes;
 			tree_elts[i].indx = i+1;
-			tree_elts[i].node = info[i+1].head;
+			tree_elts[i].node = nodes[i+1].head;
 
 			/*
-			fprintf(stderr, "[%4zu] %p %zu %u\n", i, (void *)info, i+1, info[i+1].head);
+			fprintf(stderr, "[%4zu] %p %zu %u\n", i, (void *)nodes, i+1, nodes[i+1].head);
 			*/
 		}
 
-		qsort(tree_elts, info_count-1, sizeof tree_elts[0], cmp_loop_info_proxy);
+		qsort(tree_elts, tree_node_count-1, sizeof tree_elts[0], cmp_loop_tree_node_proxy);
 
 		/*
 		fprintf(stderr, "----[ sorted by container order ]----\n");
-		for (i=0; i < info_count-1; i++) {
+		for (i=0; i < tree_node_count-1; i++) {
 			fprintf(stderr, "[%4zu] loop index %zu, loop head %u\n",
 				i, tree_elts[i].indx, tree_elts[i].node);
 		}
@@ -2623,49 +2670,49 @@ gather_loop_states(const struct dfavm_loop_analysis *a, const struct loop_array 
 		 * anything, and we don't want to allocate more space.
 		 *
 		 * Here, the value states[i] indicates the index into
-		 * info.  The max index is info_count-1, so we use the
-		 * value info_count to indidate a tombstone.
+		 * nodes.  The max index is tree_node_count-1, so we use the
+		 * value tree_node_count to indidate a tombstone.
 		 */
 
 		/* zero visited */
-		for (i=0; i < info_count; i++) {
+		for (i=0; i < tree_node_count; i++) {
 			visited[i] = 0;
 		}
 
 		num_active = 0;
-		first_tombstone = info_count;
+		first_tombstone = tree_node_count;
 
-		/* iterate info[info_count] ... info[1].  Remember that
-		 * info[0] holds the pseudo node
+		/* iterate nodes[tree_node_count] ... nodes[1].  Remember that
+		 * nodes[0] holds the pseudo node
 		 */
-		for (i=info_count-1; i > 0; i--) {
+		for (i=tree_node_count-1; i > 0; i--) {
 			size_t j, new_loop;
 
 			new_loop = tree_elts[i-1].indx;
-			assert(num_active < info_count);
+			assert(num_active < tree_node_count);
 
 			for (j=0; j < num_active; j++) {
 				size_t active_loop;
 
 				active_loop = visited[j];
-				if (active_loop < info_count && loop_info_contains(&info[new_loop], info[active_loop].head)) {
+				if (active_loop < tree_node_count && loop_tree_node_contains(&nodes[new_loop], nodes[active_loop].head)) {
 					/* add as subloop */
-					if (loop_info_add_subloop(&info[new_loop], &info[active_loop]) < 0) {
+					if (loop_tree_node_add_subloop(&nodes[new_loop], &nodes[active_loop]) < 0) {
 						goto cleanup;
 					}
 
 					/* removed from list */
-					visited[j] = info_count;
+					visited[j] = tree_node_count;
 					if (j < first_tombstone) {
 						first_tombstone = j;
 					}
 				}
 			}
 
-			j = (first_tombstone < info_count) ? first_tombstone : 0;
+			j = (first_tombstone < tree_node_count) ? first_tombstone : 0;
 			for (; j < num_active; j++) {
-				if (visited[j] == info_count) {
-					first_tombstone = info_count;
+				if (visited[j] == tree_node_count) {
+					first_tombstone = tree_node_count;
 					break;
 				}
 			}
@@ -2673,7 +2720,7 @@ gather_loop_states(const struct dfavm_loop_analysis *a, const struct loop_array 
 			if (j < num_active) {
 				visited[j] = new_loop;
 			} else {
-				assert(num_active < info_count);
+				assert(num_active < tree_node_count);
 				visited[num_active++] = new_loop;
 			}
 
@@ -2681,7 +2728,7 @@ gather_loop_states(const struct dfavm_loop_analysis *a, const struct loop_array 
 			fprintf(stderr, "\nvisited array for i=%zu, new_loop=%zu, num_active=%zu, first_tombstone=%zu\n",
 				i, new_loop, num_active, first_tombstone);
 
-			for (j=0; j < info_count; j++) {
+			for (j=0; j < tree_node_count; j++) {
 				fprintf(stderr, "  [%3zu] %zu%s%s\n",
 					j, visited[j],
 					j==num_active ? " A" : "",
@@ -2696,8 +2743,8 @@ gather_loop_states(const struct dfavm_loop_analysis *a, const struct loop_array 
 		 */
 		for (i=0; i < num_active; i++) {
 			size_t loop = visited[i];
-			if (loop < info_count) {
-				if (loop_info_add_subloop(&info[0], &info[loop]) < 0) {
+			if (loop < tree_node_count) {
+				if (loop_tree_node_add_subloop(&nodes[0], &nodes[loop]) < 0) {
 					goto cleanup;
 				}
 			}
@@ -2706,35 +2753,30 @@ gather_loop_states(const struct dfavm_loop_analysis *a, const struct loop_array 
 		free(tree_elts);
 	}
 
-	/* print out of tree */
-	/*
-	fprintf(stderr, "\n---------------[ LOOP TREE ]---------------\n");
-	print_loop_tree(&info[0], stderr, 0);
-	fprintf(stderr, "\n\n");
-	*/
-
 	/* Build loop tree... */
 	(void)print_loop_tree;
-	(void)cmp_loop_info_proxy;
-	(void)loop_info_add_subloop;
+	(void)cmp_loop_tree_node_proxy;
+	(void)loop_tree_node_add_subloop;
 
-	root = &info[0];
+	tree->root = nodes;
+	tree->n = tree_node_count;
+
+	/* print out of tree */
+	fprintf(stderr, "\n---------------[ LOOP TREE ]---------------\n");
+	print_loop_tree(tree, stderr);
+	fprintf(stderr, "\n\n");
 
 cleanup:
 	free(queue);
 	free(states);
 	free(visited);
 
-	if (root == NULL) {
-		for (i=0; i < info_count; i++) {
-			free(info[i].states);
-			free(info[i].loops);
-		}
-
-		free(info);
+	if (tree && tree->root == NULL) {
+		free_loop_tree(tree);
+		tree = NULL;
 	}
 
-	return root;
+	return tree;
 }
 
 static struct loop_array *
@@ -2833,29 +2875,63 @@ print_loops(const struct dfavm_loop_analysis *a, const struct loop_array *loops)
 	fprintf(stderr, "\n");
 }
 
+static int
+loop_analysis_process_loop(struct dfavm_loop_analysis *a, const struct loop_tree_node *tree)
+{
+	assert(a    != NULL);
+	assert(tree != NULL);
 
+	fprintf(stderr, "processing loop head: %u\n", tree->head);
+
+	/* process sub-loops */
+	{
+		size_t i,n;
+		n = tree->nloops;
+		for (i=0; i < n; i++) {
+			assert(tree->loops != NULL);
+			assert(tree->loops[i] != NULL);
+			loop_analysis_process_loop(a, tree->loops[i]);
+		}
+	}
+
+	/* now process states, unless the node is the pseudo root node */
+	if (!tree->pseudo) {
+		size_t i,n;
+		n = tree->nstates;
+		for (i=0; i < n; i++) {
+			assert(tree->states != NULL);
+			assert(tree->states[i] < a->nstates);
+		}
+	}
+
+	fprintf(stderr, "\n");
+
+	return 0;
+}
 
 static int
 loop_analysis_analyze(struct dfavm_loop_analysis *a)
 {
 	int ret = -1;
 	struct loop_array *loop_list = NULL;
-	struct loop_info *loop_info = NULL;
+	struct loop_tree *tree = NULL;
+
+	ret = -1;
 
 	a->pred_edges = build_pred_edges(a);
 	if (a->pred_edges == NULL) {
-		return -1;
+		goto cleanup;
 	}
 
 	/* identify immediate dominators */
 	if (identify_idoms(a) < 0) {
-		return -1;
+		goto cleanup;
 	}
 
 	/* identify natural loops */
 	loop_list = identify_loops(a);
 	if (loop_list == NULL) {
-		return -1;
+		goto cleanup;
 	}
 
 	/*
@@ -2868,24 +2944,55 @@ loop_analysis_analyze(struct dfavm_loop_analysis *a)
 	print_loops(a, loop_list);
 	*/
 
-	loop_info = gather_loop_states(a, loop_list);
-	if (loop_info == NULL) {
-		return -1;
+	tree = gather_loop_states(a, loop_list);
+	if (tree == NULL) {
+		goto cleanup;
 	}
 
 	/* Now identify straight paths through the loops
 	 *
 	 * We're looking for three kinds of optimizations:
 	 *
-	 * 1) searching for whole words: 
+	 * 1) searching for whole words
 	 *
-	 * 1) situations where loops, or initial parts of loops, can be
+	 * 2) situations where loops, or initial parts of loops, can be
 	 *    replaced by memchr, strspn, and strcspn
 	 *    
-	 *    (NB: this may be a better peephole optimization?)
-	 *
+	 *    NB: this may be a better peephole optimization?
 	 *
 	 */
+
+	(void)print_loops;
+	(void)print_idom_tree;
+	(void)dump_loop_analysis;
+
+	/* process the loop tree...
+	 *
+	 * We first process the inner-most loops.  Do a depth-first
+	 * search, processing nodes in post-order:
+	 *
+	 * For each loop node:
+	 *   1. process any children
+	 *   2. process self
+	 *
+	 * TODO: depth-first search using recursion is convenient, but
+	 *       probably not the safest.  Replace with an explicit
+	 *       allocated stack.
+	 */
+
+	/* first mark all states as unvisited */
+	{
+		size_t i,n;
+		
+		n = a->nstates;
+		for (i = 0; i < n; i++) {
+			a->states[i].isvisited = 0;
+		}
+	}
+
+	if (loop_analysis_process_loop(a, tree->root) < 0) {
+		goto cleanup;
+	}
 
 	/* original todo:
 	 * 2) identify loops
@@ -2899,9 +3006,13 @@ loop_analysis_analyze(struct dfavm_loop_analysis *a)
 	 *   /^.*(abc|bcd).*$/
 	 */
 
-	free_loops(loops);
+	ret = 0;
 
-	return 0;
+cleanup:
+	free_loops(loop_list);
+	free_loop_tree(tree);
+
+	return ret;
 }
 
 static void
@@ -2938,6 +3049,7 @@ dfavm_compile_ir(struct dfavm_assembler_ir *a, const struct ir *ir, struct fsm_v
 	}
 
 	if (loop_analysis_analyze(&loop_analysis) != 0) {
+		loop_analysis_finalize(&loop_analysis);
 		return 0;
 	}
 
