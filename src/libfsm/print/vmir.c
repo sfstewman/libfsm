@@ -48,11 +48,13 @@ fsm_print_vmir(FILE *f, const struct fsm *fsm)
 	a = zero;
 
 	if (!dfavm_compile_ir(&a, ir, vm_opts)) {
-		return;
+		goto finish;
 	}
 
 	dfavm_print_opcodes(f, &a);
 
 	dfavm_opasm_finalize_op(&a);
+
+finish:
 	free_ir(fsm, ir);
 }
