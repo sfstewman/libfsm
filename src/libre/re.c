@@ -108,6 +108,10 @@ re_parse_only(enum re_dialect dialect, int (*getc)(void *opaque), void *opaque,
 	flags |= m->flags;
 
 	ast = m->parse(getc, opaque, opt, flags, m->overlap, err);
+	if (!ast_rewrite(ast, flags)) {
+		ast_free(ast);
+		return NULL;
+	}
 
 	return ast;
 }
