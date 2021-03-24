@@ -118,6 +118,7 @@ ast_pool_free(struct ast_expr_pool *pool)
 			case AST_EXPR_REPEAT:
 			case AST_EXPR_GROUP:
 			case AST_EXPR_TOMBSTONE:
+			case AST_EXPR_PLACEHOLDER:
 				break;
 
 			case AST_EXPR_CONCAT:
@@ -191,6 +192,7 @@ ast_expr_free(struct ast_expr_pool *pool, struct ast_expr *n)
 	case AST_EXPR_CODEPOINT:
 	case AST_EXPR_ANCHOR:
 	case AST_EXPR_RANGE:
+	case AST_EXPR_PLACEHOLDER:
 		/* these nodes have no subnodes or dynamic allocation */
 		break;
 
@@ -270,6 +272,7 @@ ast_expr_clone(struct ast_expr_pool **poolp, struct ast_expr **n)
 	case AST_EXPR_CODEPOINT:
 	case AST_EXPR_ANCHOR:
 	case AST_EXPR_RANGE:
+	case AST_EXPR_PLACEHOLDER:
 		break;
 
 	case AST_EXPR_SUBTRACT:

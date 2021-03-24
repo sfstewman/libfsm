@@ -18,3 +18,9 @@ re_strings_add_raw
 re_strings_add_str
 re_strings_build
 
+re_parse_string
+re_parse_ast_match
+re_ast_rewrite
+re_parse_only
+ast_rewrite_and_analyze
+

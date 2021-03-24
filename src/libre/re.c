@@ -90,6 +90,55 @@ re_flags(const char *s, enum re_flags *f)
 }
 
 struct ast *
+re_parse_only(enum re_dialect dialect, int (*getc)(void *opaque), void *opaque,
+	const struct fsm_options *opt,
+	enum re_flags flags, struct re_err *err)
+{
+	const struct dialect *m;
+	struct ast *ast = NULL;
+	
+	assert(getc != NULL);
+
+	m = re_dialect(dialect);
+	if (m == NULL) {
+		if (err != NULL) { err->e = RE_EBADDIALECT; }
+		return NULL;
+	}
+
+	flags |= m->flags;
+
+	ast = m->parse(getc, opaque, opt, flags, m->overlap, err);
+
+	return ast;
+}
+
+struct ast *
+ast_rewrite_and_analyze(struct ast *ast, enum re_flags flags, struct re_err *err, int *unsatisfiable)
+{
+	enum ast_analysis_res res;
+
+	if (!ast_rewrite(ast, flags)) {
+		ast_free(ast);
+		return NULL;
+	}
+
+	/* Do a complete pass over the AST, filling in other details. */
+	res = ast_analysis(ast);
+
+	if (res < 0) {
+		ast_free(ast);
+		if (err != NULL) { err->e = RE_EERRNO; }
+		return NULL;
+	}
+
+	if (unsatisfiable != NULL) {
+		*unsatisfiable = (res == AST_ANALYSIS_UNSATISFIABLE);
+	}
+
+	return ast;
+}
+
+struct ast *
 re_parse(enum re_dialect dialect, int (*getc)(void *opaque), void *opaque,
 	const struct fsm_options *opt,
 	enum re_flags flags, struct re_err *err, int *unsatisfiable)
@@ -189,3 +238,4 @@ error:
 
 	return NULL;
 }
+

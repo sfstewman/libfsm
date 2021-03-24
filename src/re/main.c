@@ -633,6 +633,9 @@ main(int argc, char *argv[])
 	int ambig;
 	int makevm;
 
+	const char *rewrite_match = NULL;
+	const char *rewrite_subst = NULL;
+
 	struct fsm_dfavm *vm;
 
 	atexit(do_fsm_cleanup);
@@ -663,7 +666,7 @@ main(int argc, char *argv[])
 	{
 		int c;
 
-		while (c = getopt(argc, argv, "h" "acwXe:k:" "bi" "sq:r:l:F:" "upMmnfxyz"), c != -1) {
+		while (c = getopt(argc, argv, "h" "acwXe:k:" "bi" "sq:r:l:F:" "upMmnfxyz" "R:S:"), c != -1) {
 			switch (c) {
 			case 'a': opt.anonymous_states  = 0;          break;
 			case 'c': opt.consolidate_edges = 0;          break;
@@ -700,6 +703,9 @@ main(int argc, char *argv[])
 			case 'z': patterns = 1; break;
 			case 'M': makevm   = 1; break;
 
+			case 'R': rewrite_match = optarg; break;
+			case 'S': rewrite_subst = optarg; break;
+
 			case 'h':
 				usage();
 				return EXIT_SUCCESS;
@@ -718,6 +724,16 @@ main(int argc, char *argv[])
 	if (argc < 1) {
 		usage();
 		return EXIT_FAILURE;
+	}
+
+	if (!!rewrite_match != !!rewrite_subst) {
+	       fprintf(stderr, "-R <match> and -S <subst> must be given together\n");
+	       return EXIT_FAILURE;
+	}
+
+	if (rewrite_match && (fsmfiles || yfiles)) {
+	       fprintf(stderr, "-R/-S is currently not supported with -f or -y\n");
+	       return EXIT_FAILURE;
 	}
 
 	if (!!print_fsm + !!print_ast + example + !!query > 1) {
@@ -754,8 +770,8 @@ main(int argc, char *argv[])
 	}
 
 	/* XXX: repetitive */
-	if (print_ast != NULL) {
-		struct ast *ast;
+	if (print_ast != NULL || rewrite_match != NULL) {
+		struct ast *ast, *match_ast, *subst_ast;
 		struct re_err err;
 
 		if (argc != 1) {
@@ -795,7 +811,11 @@ main(int argc, char *argv[])
 
 			s = argv[0];
 
-			ast = re_parse(dialect, fsm_sgetc, &s, &opt, flags, &err, NULL);
+			if (rewrite_match == NULL) {
+				ast = re_parse(dialect, fsm_sgetc, &s, &opt, flags, &err, NULL);
+			} else {
+				ast = re_parse_only(dialect, fsm_sgetc, &s, &opt, flags, &err);
+			}
 		}
 
 		if (ast == NULL) {
@@ -808,6 +828,63 @@ main(int argc, char *argv[])
 			}
 
 			return EXIT_FAILURE;
+		}
+
+		if (rewrite_match != NULL) {
+			static const struct re_err err_zero;
+			struct re_err match_err = err_zero;
+			size_t nsubst, total_subst, iter;
+
+			if (rewrite_subst == NULL) {
+				fprintf(stderr, "rewrite match, but no rewrite subst\n");
+				return EXIT_FAILURE;
+			}
+
+			match_ast = re_parse_ast_match(rewrite_match, &match_err, "xyz@#");
+			if (match_ast == NULL) {
+				perror("parsing rewrite match");
+				return EXIT_FAILURE;
+			}
+
+			subst_ast = re_parse_ast_match(rewrite_subst, &match_err, "xyz@#");
+			if (subst_ast == NULL) {
+				perror("parsing rewrite subst");
+				return EXIT_FAILURE;
+			}
+
+			fprintf(stderr, "---[ MATCH ]---\n");
+			ast_print_tree(stderr, &opt, flags, match_ast);
+
+			fprintf(stderr, "\n---[ SUBST ]---\n");
+			ast_print_tree(stderr, &opt, flags, subst_ast);
+
+			fprintf(stderr, "\n---[ AST:0 ]---\n");
+			ast_print_tree(stderr, &opt, flags, ast);
+
+			total_subst = 0;
+			iter = 0;
+			do {
+				nsubst = re_ast_rewrite(ast, match_ast, subst_ast);
+				total_subst += nsubst;
+				iter++;
+
+				fprintf(stderr, "\n---[ AST:%lu, %lu subst, %lu total subst ]---\n",
+					(unsigned long)iter,
+					(unsigned long)nsubst,
+					(unsigned long)total_subst);
+				ast_print_tree(stderr, &opt, flags, ast);
+			} while (nsubst > 0);
+
+			fprintf(stderr, "\nMade %lu total substitutions\n\n", (unsigned long)total_subst);
+
+			ast_free(match_ast);
+			ast_free(subst_ast);
+
+			ast = ast_rewrite_and_analyze(ast, flags, &err, NULL);
+			if (ast == NULL) {
+				perror("rewriting and analyzing the AST");
+				return EXIT_FAILURE;
+			}
 		}
 
 		print_ast(stdout, &opt, flags, ast);

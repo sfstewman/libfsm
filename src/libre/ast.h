@@ -34,6 +34,7 @@ enum ast_expr_type {
 	AST_EXPR_SUBTRACT,
 	AST_EXPR_RANGE,
 /*	AST_EXPR_TYPE, XXX: not implemented */
+	AST_EXPR_PLACEHOLDER, /* internal type for AST matching */
 	AST_EXPR_TOMBSTONE
 };
 
@@ -178,6 +179,10 @@ struct ast_expr {
 		struct {
 			const struct class *class;
 		} named;
+
+		struct {
+			int index;
+		} placeholder;
 	} u;
 };
 
@@ -290,6 +295,10 @@ ast_make_expr_range(struct ast_expr_pool **poolp, enum re_flags re_flags,
 struct ast_expr *
 ast_make_expr_named(struct ast_expr_pool **poolp, enum re_flags re_flags, const struct class *class);
 
+void
+ast_print_subtree(FILE *f, const struct fsm_options *opt,
+	enum re_flags re_flags, const struct ast_expr *subtree);
+
 /* XXX: exposed for sake of re(1) printing an ast;
  * it's not part of the <re/re.h> API proper */
 struct fsm_options;
@@ -297,5 +306,13 @@ struct ast *
 re_parse(enum re_dialect dialect, int (*getc)(void *opaque), void *opaque,
 	const struct fsm_options *opt,
 	enum re_flags flags, struct re_err *err, int *unsatisfiable);
+
+struct ast *
+re_parse_only(enum re_dialect dialect, int (*getc)(void *opaque), void *opaque,
+	const struct fsm_options *opt,
+	enum re_flags flags, struct re_err *err);
+
+struct ast *
+ast_rewrite_and_analyze(struct ast *ast, enum re_flags flags, struct re_err *err, int *unsatisfiable);
 
 #endif

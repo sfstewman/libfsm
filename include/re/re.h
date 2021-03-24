@@ -151,6 +151,39 @@ re_comp(enum re_dialect dialect,
 	const struct fsm_options *opt,
 	enum re_flags flags, struct re_err *err);
 
+/* XXX: prototype */
+struct ast;
+
+/* XXX: prototype
+ *
+ * parses the regexp as a string, returning the internal AST.
+ */
+struct ast *re_parse_string(enum re_dialect dialect, const char *s, struct re_err *err, int only_parse);
+
+/* XXX: prototype
+ *
+ * prints a text representation of the AST to f */
+void re_print_ast(struct ast *ast, FILE *f);
+
+/* XXX: prototype
+ * 
+ * parses the string into an AST tree where LITERAL nodes with chars in
+ * the string `placeholders` are replaced by PLACEHOLDER nodes
+ *
+ * the dialect is always NATIVE.
+ */
+struct ast *re_parse_ast_match(const char *s, struct re_err *err, const char *placeholders);
+
+/* XXX: prototype
+ *
+ * rewrites the AST `ast` by matching with `match` and substituting any
+ * match with `subst`
+ *
+ * Returns the number of substitutions
+ */
+size_t re_ast_rewrite(struct ast *ast, const struct ast *match, const struct ast *subst);
+
+
 /*
  * Return a human-readable string describing a given error code. The string
  * returned has static storage, and must not be freed.

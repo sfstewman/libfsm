@@ -95,7 +95,7 @@ print_endpoint(FILE *f, const struct ast_endpoint *e)
 }
 
 static void
-pp_iter(FILE *f, const struct fsm_options *opt, size_t indent, enum re_flags re_flags, struct ast_expr *n)
+pp_iter(FILE *f, const struct fsm_options *opt, size_t indent, enum re_flags re_flags, const struct ast_expr *n)
 {
 	assert(f != NULL);
 	assert(opt != NULL);
@@ -193,9 +193,24 @@ pp_iter(FILE *f, const struct fsm_options *opt, size_t indent, enum re_flags re_
 		fprintf(f, "RIP\n");
 		break;
 
+	case AST_EXPR_PLACEHOLDER:
+		fprintf(f, "PLACEHOLDER[%d]\n", n->u.placeholder.index);
+		break;
+
 	default:
 		assert(!"unreached");
 	}
+}
+
+void
+ast_print_subtree(FILE *f, const struct fsm_options *opt,
+	enum re_flags re_flags, const struct ast_expr *subtree)
+{
+	assert(f != NULL);
+	assert(opt != NULL);
+	assert(subtree != NULL);
+
+	pp_iter(f, opt, 0, re_flags, subtree);
 }
 
 void
